@@ -5,6 +5,7 @@ import { useAuth } from "./features/auth/AuthContext";
 import { AuthScreen } from "./features/auth/AuthScreen";
 import { RecoveryScreen } from "./features/auth/RecoveryScreen";
 import { ProfileScreen } from "./features/profile/ProfileScreen";
+import { LegalPages } from "./features/legal/LegalPages";
 import { PlatformScreen } from "./features/platform/PlatformScreen";
 import { RealtimeProvider } from "./features/platform/RealtimeProvider";
 import "./index.css";
@@ -63,6 +64,11 @@ export default function App(): React.JSX.Element {
             <RouteFocus />
             <Routes>
               <Route path="/" element={<HomeRedirect />} />
+              <Route path="/about" element={<LegalPages />} />
+              <Route path="/privacy" element={<LegalPages />} />
+              <Route path="/terms" element={<LegalPages />} />
+              <Route path="/guidelines" element={<LegalPages />} />
+              <Route path="/contact" element={<LegalPages />} />
               <Route path="/join" element={<AuthScreen mode="register" />} />
               <Route path="/login" element={<AuthScreen mode="login" />} />
               <Route path="/forgot-password" element={<RecoveryScreen />} />

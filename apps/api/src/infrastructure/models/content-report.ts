@@ -1,0 +1,8 @@
+import mongoose, { type Model, type Types } from "mongoose";
+export type ReportTargetType = "user" | "video" | "comment";
+export type ReportReason = "spam" | "harassment" | "hate" | "violence" | "sexual_content" | "dangerous_activity" | "misinformation" | "copyright" | "privacy" | "impersonation" | "other";
+export interface ContentReportRecord { reporterId: Types.ObjectId; targetId: Types.ObjectId; targetType: ReportTargetType; reason: ReportReason; details: string | null; status: "pending" | "reviewing" | "resolved" | "dismissed"; resolvedAt: Date | null; createdAt: Date; updatedAt: Date; }
+const schema = new mongoose.Schema<ContentReportRecord>({ reporterId: { type: mongoose.Schema.Types.ObjectId, ref: "NerloqUser", required: true }, targetId: { type: mongoose.Schema.Types.ObjectId, required: true }, targetType: { type: String, enum: ["user", "video", "comment"], required: true }, reason: { type: String, enum: ["spam", "harassment", "hate", "violence", "sexual_content", "dangerous_activity", "misinformation", "copyright", "privacy", "impersonation", "other"], required: true }, details: { type: String, maxlength: 1000, default: null }, status: { type: String, enum: ["pending", "reviewing", "resolved", "dismissed"], default: "pending", index: true }, resolvedAt: { type: Date, default: null } }, { timestamps: true, versionKey: false });
+schema.index({ reporterId: 1, targetType: 1, targetId: 1 }, { unique: true });
+schema.index({ status: 1, createdAt: 1 });
+export const ContentReportModel: Model<ContentReportRecord> = (mongoose.models["NerloqContentReport"] as Model<ContentReportRecord> | undefined) ?? mongoose.model<ContentReportRecord>("NerloqContentReport", schema, "content_reports");

@@ -1,0 +1,6 @@
+import mongoose, { type Model, type Types } from "mongoose";
+export interface MessageRecord { conversationId: Types.ObjectId; senderId: Types.ObjectId; text: string; replyToMessageId: Types.ObjectId | null; readAt: Date | null; editedAt: Date | null; deletedAt: Date | null; createdAt: Date; }
+const schema = new mongoose.Schema<MessageRecord>({ conversationId: { type: mongoose.Schema.Types.ObjectId, ref: "NerloqConversation", required: true }, senderId: { type: mongoose.Schema.Types.ObjectId, ref: "NerloqUser", required: true }, text: { type: String, required: true, trim: true, maxlength: 4000 }, replyToMessageId: { type: mongoose.Schema.Types.ObjectId, ref: "NerloqMessage", default: null }, readAt: { type: Date, default: null }, editedAt: { type: Date, default: null }, deletedAt: { type: Date, default: null } }, { timestamps: { createdAt: true, updatedAt: false }, versionKey: false });
+schema.index({ conversationId: 1, createdAt: -1, _id: -1 });
+schema.index({ conversationId: 1, senderId: 1, readAt: 1 });
+export const MessageModel: Model<MessageRecord> = (mongoose.models["NerloqMessage"] as Model<MessageRecord> | undefined) ?? mongoose.model<MessageRecord>("NerloqMessage", schema, "messages");

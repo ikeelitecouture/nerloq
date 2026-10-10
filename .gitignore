@@ -1,0 +1,53 @@
+.env
+.env.*
+!.env.example
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+*.tsbuildinfo
+**/*.tsbuildinfo
+**/var/media/
+coverage/
+**/coverage/
+*.log
+npm-debug.log*
+.DS_Store
+
+# Secrets and environment files
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Dependencies and generated files
+node_modules/
+dist/
+build/
+coverage/
+*.log
+.DS_Store
+
+# Local backups and temporary editor copies
+backups/
+*.bak
+*.bak.*
+*.backup
+*.backup.*
+*.before-*
+*.pixabay-backup-*
+*.tsbuildinfo
+
+# Accidental local files
+/nerloq@1.0.0
+/npm
+/tsc
+/apps/web/nerloq@1.0.0
+/apps/web/npm
+
+# Generated inventories and service-worker backups
+nerloq-files.txt
+**/*.backup-*

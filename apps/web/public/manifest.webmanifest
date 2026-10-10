@@ -1,0 +1,32 @@
+{
+  "id": "/",
+  "name": "NERLOQ \u2014 Create. Connect. Discover.",
+  "short_name": "NERLOQ",
+  "description": "Create. Connect. Discover. Your world of connection.",
+  "start_url": "/?source=pwa",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#11120f",
+  "theme_color": "#11120f",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/nerloq-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/nerloq-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/nerloq-512-maskable.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

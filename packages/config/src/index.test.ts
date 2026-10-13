@@ -20,6 +20,28 @@ const base = {
 };
 
 describe("environment provider safety", () => {
+  it("rejects the unsupported GCS provider", () => {
+    expect(() =>
+      validateEnvironment({
+        ...base,
+        NODE_ENV: "development",
+        MEDIA_STORAGE_PROVIDER: "gcs",
+      } as NodeJS.ProcessEnv),
+    ).toThrow();
+  });
+
+  it("requires an endpoint when using Cloudflare R2", () => {
+    expect(() =>
+      validateEnvironment({
+        ...base,
+        NODE_ENV: "development",
+        MEDIA_STORAGE_PROVIDER: "r2",
+        MEDIA_STORAGE_ACCESS_KEY: "access",
+        MEDIA_STORAGE_SECRET_KEY: "secret",
+      } as NodeJS.ProcessEnv),
+    ).toThrow(/R2 requires MEDIA_STORAGE_ENDPOINT/);
+  });
+
   it("allows local development without requiring Redis", () => {
     const result = validateEnvironment({ ...base, NODE_ENV: "development" } as NodeJS.ProcessEnv);
     expect(result.REDIS_REQUIRED).toBe(false);

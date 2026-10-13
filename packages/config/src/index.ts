@@ -52,7 +52,7 @@ const environmentSchema = z.object({
   MAX_VIDEO_HEIGHT: positiveInteger.default(3840),
 
   MEDIA_STORAGE_PROVIDER: z
-    .enum(["local", "s3", "r2", "gcs"])
+    .enum(["local", "s3", "r2"])
     .default("local"),
 
   MEDIA_STORAGE_BUCKET: z.string().trim().min(1).default("nerloq-media"),
@@ -163,6 +163,10 @@ function validateEnvironment(
 
   if (config.EMAIL_PROVIDER === "smtp") {
     throw new Error("SMTP delivery is not supported by this build. Configure Resend or SendGrid.");
+  }
+
+  if (config.MEDIA_STORAGE_PROVIDER === "r2" && !config.MEDIA_STORAGE_ENDPOINT) {
+    throw new Error("Cloudflare R2 requires MEDIA_STORAGE_ENDPOINT.");
   }
 
   if (config.MEDIA_STORAGE_PROVIDER !== "local") {

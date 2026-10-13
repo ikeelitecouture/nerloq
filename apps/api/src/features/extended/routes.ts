@@ -5,6 +5,7 @@ import { basename, join } from "node:path";
 import type { FastifyPluginAsync } from "fastify";
 import { Types } from "mongoose";
 import { config } from "@nerloq/config";
+import { deleteMediaFile, getMediaInfo, getMediaStream, uploadMediaFile } from "../../infrastructure/storage/media-storage.js";
 import { clampPaginationLimit } from "@nerloq/shared";
 import {
   completeUploadSchema,
@@ -166,7 +167,7 @@ export const extendedRoutes: FastifyPluginAsync = async (app) => {
   app.post("/uploads", { config: { rateLimit: { max: 10, timeWindow: 60_000 } } }, async (request, reply) => {
     const userId = await authenticate(request);
     if (!userId) return fail(reply, 401, "AUTHENTICATION_REQUIRED", "Sign in to initialize an upload.", request.id);
-    if (config.MEDIA_STORAGE_PROVIDER !== "local") return fail(reply, 503, "MEDIA_PROVIDER_UNAVAILABLE", "The configured media provider does not have an upload adapter enabled.", request.id);
+
     const input = parseInput(uploadInitializationSchema, request.body);
     if (!input || !/^[a-f0-9]{64}$/i.test(input.checksum) || input.sizeBytes > config.MAX_UPLOAD_BYTES || !extensionForMime(input.mimeType)) return fail(reply, 400, "INVALID_UPLOAD", "The upload metadata is invalid or the media type is unsupported.", request.id);
     const totalChunks = Math.ceil(input.sizeBytes / CHUNK_SIZE_BYTES);
@@ -223,7 +224,7 @@ export const extendedRoutes: FastifyPluginAsync = async (app) => {
   app.post("/uploads/:uploadSessionId/complete", { config: { rateLimit: { max: 10, timeWindow: 60_000 } } }, async (request, reply) => {
     const userId = await authenticate(request);
     if (!userId) return fail(reply, 401, "AUTHENTICATION_REQUIRED", "Sign in to complete an upload.", request.id);
-    if (config.MEDIA_STORAGE_PROVIDER !== "local") return fail(reply, 503, "MEDIA_PROVIDER_UNAVAILABLE", "The configured media provider does not have an upload adapter enabled.", request.id);
+
     const { uploadSessionId } = request.params as { uploadSessionId: string };
     const input = parseInput(completeUploadSchema, { ...(request.body as Record<string, unknown> | null), uploadSessionId });
     if (!input || !validObjectId(uploadSessionId)) return fail(reply, 400, "INVALID_UPLOAD", "The upload completion payload is invalid.", request.id);
@@ -233,6 +234,7 @@ export const extendedRoutes: FastifyPluginAsync = async (app) => {
     const finalPath = join(MEDIA_ROOT, finalKey);
     await mkdir(MEDIA_ROOT, { recursive: true, mode: 0o700 });
     await UploadSessionModel.updateOne({ _id: session._id }, { $set: { status: "processing" } });
+    let cloudUploaded = false;
     try {
       const output = await open(finalPath, "wx", 0o600);
       try {
@@ -261,11 +263,22 @@ export const extendedRoutes: FastifyPluginAsync = async (app) => {
       } else if (!isSafeCoverImage(session.mimeType, prefix)) {
         throw Object.assign(new Error("The uploaded file contents do not match its media type."), { statusCode: 415, code: "INVALID_MEDIA_CONTENT" });
       }
-      const asset = await MediaAssetModel.create({ ownerId: userId, storageProvider: "local", storageKey: finalKey, mimeType: session.mimeType, byteSize: (await stat(finalPath)).size, width, height, durationMs, status: "ready", checksum });
+      const byteSize = (await stat(finalPath)).size;
+      if (config.MEDIA_STORAGE_PROVIDER !== "local") {
+        await uploadMediaFile(finalKey, finalPath, session.mimeType);
+        cloudUploaded = true;
+      }
+      const asset = await MediaAssetModel.create({ ownerId: userId, storageProvider: config.MEDIA_STORAGE_PROVIDER, storageKey: finalKey, mimeType: session.mimeType, byteSize, width, height, durationMs, status: "ready", checksum });
       await UploadSessionModel.updateOne({ _id: session._id }, { $set: { status: "completed", storageKey: finalKey, mediaAssetId: asset._id } });
+      if (cloudUploaded) await rm(finalPath, { force: true });
       await rm(session.tempDirectory, { recursive: true, force: true });
       return reply.send(envelope({ upload: uploadView({ ...session.toObject(), status: "completed", storageKey: finalKey, mediaAssetId: asset._id }), mediaAsset: presentAsset(asset) }, request.id));
      } catch (error) {
+      if (cloudUploaded) {
+        await deleteMediaFile(finalKey).catch((cleanupError: unknown) => {
+          request.log.error({ err: cleanupError }, "Failed to clean up cloud media after upload failure");
+        });
+      }
        await rm(finalPath, { force: true }).catch(() => undefined);
        await rm(session.tempDirectory, { recursive: true, force: true }).catch(() => undefined);
        await MediaAssetModel.deleteOne({ storageKey: finalKey, ownerId: userId }).catch(() => undefined);
@@ -280,28 +293,108 @@ export const extendedRoutes: FastifyPluginAsync = async (app) => {
   app.get("/media-assets/:assetId", async (request, reply) => {
     const { assetId } = request.params as { assetId: string };
     if (!validObjectId(assetId)) return fail(reply, 404, "MEDIA_UNAVAILABLE", "Media is unavailable.", request.id);
-     const viewerId = await authenticate(request, { rejectInvalidCredential: false });
+
+    const viewerId = await authenticate(request, { rejectInvalidCredential: false });
     const asset = await MediaAssetModel.findOne({ _id: assetId, status: "ready" });
-    if (!asset || config.MEDIA_STORAGE_PROVIDER !== "local") return fail(reply, 404, "MEDIA_UNAVAILABLE", "Media is unavailable.", request.id);
+    if (!asset) return fail(reply, 404, "MEDIA_UNAVAILABLE", "Media is unavailable.", request.id);
+
     const isOwner = viewerId === asset.ownerId.toString();
-    const story = !isOwner ? await StoryModel.findOne({ mediaAssetId: asset._id, status: "active", expiresAt: { $gt: new Date() } }) : null;
-    if (!isOwner && (!story || !(await visibleStory(story, viewerId)))) return fail(reply, 404, "MEDIA_UNAVAILABLE", "Media is unavailable.", request.id);
+    const story = !isOwner
+      ? await StoryModel.findOne({
+          mediaAssetId: asset._id,
+          status: "active",
+          expiresAt: { $gt: new Date() },
+        })
+      : null;
+
+    if (!isOwner && (!story || !(await visibleStory(story, viewerId)))) {
+      return fail(reply, 404, "MEDIA_UNAVAILABLE", "Media is unavailable.", request.id);
+    }
+
     try {
-      const path = uploadPath(MEDIA_ROOT, asset.storageKey);
-      const fileInfo = await stat(path);
-       const cache = "private, no-store";
-      const range = request.headers.range;
-      if (range) {
-        const match = /^bytes=(\d*)-(\d*)$/.exec(range);
-        if (!match) return reply.code(416).header("Content-Range", `bytes */${fileInfo.size}`).send();
-        const start = match[1] ? Number(match[1]) : Math.max(0, fileInfo.size - Number(match[2] || 0));
-        let end = match[2] && match[1] ? Number(match[2]) : fileInfo.size - 1;
-        if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end < start || start >= fileInfo.size) return reply.code(416).header("Content-Range", `bytes */${fileInfo.size}`).send();
-        end = Math.min(end, fileInfo.size - 1);
-         return reply.code(206).type(asset.mimeType).header("Accept-Ranges", "bytes").header("Content-Range", `bytes ${start}-${end}/${fileInfo.size}`).header("Content-Length", String(end - start + 1)).header("Cache-Control", cache).header("Vary", "Cookie").header("X-Content-Type-Options", "nosniff").send(createReadStream(path, { start, end }));
+      let size: number;
+      let localPath: string | null = null;
+
+      if (asset.storageProvider === "local") {
+        localPath = uploadPath(MEDIA_ROOT, asset.storageKey);
+        size = (await stat(localPath)).size;
+      } else if (asset.storageProvider === "s3" || asset.storageProvider === "r2") {
+        size = (await getMediaInfo(asset.storageKey)).size;
+      } else {
+        return fail(reply, 404, "MEDIA_UNAVAILABLE", "Media is unavailable.", request.id);
       }
-       return reply.type(asset.mimeType).header("Accept-Ranges", "bytes").header("Content-Length", String(fileInfo.size)).header("Cache-Control", cache).header("Vary", "Cookie").header("X-Content-Type-Options", "nosniff").send(createReadStream(path));
-    } catch {
+
+      if (!Number.isSafeInteger(size) || size <= 0) {
+        return fail(reply, 404, "MEDIA_UNAVAILABLE", "Media is unavailable.", request.id);
+      }
+
+      const cache = "private, no-store";
+      const commonHeaders = reply
+        .type(asset.mimeType)
+        .header("Accept-Ranges", "bytes")
+        .header("Cache-Control", cache)
+        .header("Vary", "Cookie")
+        .header("X-Content-Type-Options", "nosniff");
+
+      const rangeHeader = request.headers.range;
+      let startByte = 0;
+      let endByte = size - 1;
+      let partial = false;
+
+      if (rangeHeader) {
+        const match = /^bytes=(\d*)-(\d*)$/.exec(rangeHeader.trim());
+
+        if (!match || (!match[1] && !match[2])) {
+          return reply.code(416).header("Content-Range", `bytes */${size}`).send();
+        }
+
+        if (!match[1]) {
+          const suffixLength = Number(match[2]);
+          if (!Number.isSafeInteger(suffixLength) || suffixLength <= 0) {
+            return reply.code(416).header("Content-Range", `bytes */${size}`).send();
+          }
+          startByte = Math.max(0, size - suffixLength);
+        } else {
+          startByte = Number(match[1]);
+          if (!Number.isSafeInteger(startByte) || startByte < 0) {
+            return reply.code(416).header("Content-Range", `bytes */${size}`).send();
+          }
+        }
+
+        if (match[2] && match[1]) {
+          endByte = Number(match[2]);
+          if (!Number.isSafeInteger(endByte) || endByte < startByte) {
+            return reply.code(416).header("Content-Range", `bytes */${size}`).send();
+          }
+        }
+
+        if (startByte >= size) {
+          return reply.code(416).header("Content-Range", `bytes */${size}`).send();
+        }
+
+        endByte = Math.min(endByte, size - 1);
+        partial = true;
+      }
+
+      const contentLength = endByte - startByte + 1;
+      commonHeaders.header("Content-Length", String(contentLength));
+
+      if (partial) {
+        commonHeaders.header("Content-Range", `bytes ${startByte}-${endByte}/${size}`);
+        commonHeaders.code(206);
+      }
+
+      const stream = localPath
+        ? createReadStream(localPath, partial ? { start: startByte, end: endByte } : undefined)
+        : await getMediaStream(
+            asset.storageKey,
+            partial ? { start: startByte, end: endByte } : undefined,
+          );
+
+      return commonHeaders.send(stream);
+    } catch (error) {
+      request.log.warn({ err: error, assetId }, "Media playback could not retrieve the asset");
+      if (reply.sent) return;
       return fail(reply, 404, "MEDIA_UNAVAILABLE", "Media is unavailable.", request.id);
     }
   });

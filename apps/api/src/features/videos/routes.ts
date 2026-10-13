@@ -27,6 +27,7 @@ import { disconnectRealtimeUser, emitToUser } from "../../infrastructure/realtim
 import { userSettingsSchema } from "@nerloq/validation";
 import { inspectVideoMetadata, isSafeCoverImage, isSupportedVideoContent } from "./media-validation.js";
 import { decodeCursor, encodeCursor } from "../../infrastructure/pagination.js";
+import { deleteMediaFile, getMediaInfo, getMediaStream, uploadMediaFile } from "../../infrastructure/storage/media-storage.js";
 
 const MEDIA_ROOT = join(process.cwd(), "var", "media");
 type Actor = { id: string; username: string; displayName: string; avatarUrl: string | null; verified: boolean };
@@ -222,7 +223,7 @@ export const videoRoutes: FastifyPluginAsync = async (app) => {
     let rankedPage = page;
     const tagAffinity = new Map<string, number>();
     let watchedIds = new Set<string>();
-    let creatorAffinity = new Map<string, number>();
+    const creatorAffinity = new Map<string, number>();
     const watchCounts = new Map<string, number>();
     const completedCounts = new Map<string, number>();
     const skipCounts = new Map<string, number>();
@@ -373,7 +374,6 @@ export const videoRoutes: FastifyPluginAsync = async (app) => {
    app.post("/videos", { bodyLimit: config.MAX_UPLOAD_BYTES + 1024 * 1024, config: { rateLimit: { max: 10, timeWindow: 60_000 } } }, async (request, reply) => {
     const userId = await authenticate(request);
     if (!userId) return fail(reply, 401, "AUTHENTICATION_REQUIRED", "Sign in to publish a video.", request.id);
-    if (config.MEDIA_STORAGE_PROVIDER !== "local") return fail(reply, 503, "MEDIA_PROVIDER_UNAVAILABLE", "The configured media provider does not have an upload adapter enabled.", request.id);
     await mkdir(MEDIA_ROOT, { recursive: true, mode: 0o700 });
     let mediaKey: string | null = null;
     let tempPath: string | null = null;
@@ -382,6 +382,8 @@ export const videoRoutes: FastifyPluginAsync = async (app) => {
     let thumbnailTempPath: string | null = null;
      let thumbnailStoredPath: string | null = null;
      let thumbnailMimeType: string | null = null;
+    const uploadedCloudKeys: string[] = [];
+    const useCloudStorage = config.MEDIA_STORAGE_PROVIDER !== "local";
     let mimeType = "";
     let byteSize = 0;
     let durationMs = 0;
@@ -469,13 +471,47 @@ export const videoRoutes: FastifyPluginAsync = async (app) => {
        if (durationMs > config.MAX_VIDEO_DURATION_MS) throw Object.assign(new Error("Video duration exceeds the allowed limit."), { statusCode: 400, code: "INVALID_DURATION" });
        if ((metadata.width !== null && metadata.width > config.MAX_VIDEO_WIDTH) || (metadata.height !== null && metadata.height > config.MAX_VIDEO_HEIGHT)) throw Object.assign(new Error("Video dimensions exceed the allowed limit."), { statusCode: 400, code: "INVALID_DIMENSIONS" });
       const checksumHex = checksum.digest("hex");
-      const video = await VideoModel.create({ creatorId: userId, caption, hashtags: toHashtags(caption), mediaKey: `${mediaKey}${storedPath.endsWith(".webm") ? ".webm" : storedPath.endsWith(".mov") ? ".mov" : ".mp4"}`, mimeType, mediaSizeBytes: byteSize, mediaWidth, mediaHeight, checksum: checksumHex, durationMs, thumbnailKey, thumbnailMimeType, privacy, commentsAllowed, allowDownloads, status: "published" });
+      const finalMediaKey = `${mediaKey}${storedPath.endsWith(".webm") ? ".webm" : storedPath.endsWith(".mov") ? ".mov" : ".mp4"}`;
+
+      if (useCloudStorage) {
+        await uploadMediaFile(finalMediaKey, storedPath, mimeType);
+        uploadedCloudKeys.push(finalMediaKey);
+
+        if (thumbnailKey && thumbnailStoredPath && thumbnailMimeType) {
+          await uploadMediaFile(thumbnailKey, thumbnailStoredPath, thumbnailMimeType);
+          uploadedCloudKeys.push(thumbnailKey);
+        }
+
+        // Cloud uploads have succeeded; remove redundant local copies.
+        await unlink(storedPath).catch((cleanupError: unknown) =>
+          request.log.warn(
+            { err: cleanupError, path: storedPath },
+            "Local video cleanup failed after cloud upload",
+          ),
+        );
+
+        if (thumbnailStoredPath) {
+          await unlink(thumbnailStoredPath).catch((cleanupError: unknown) =>
+            request.log.warn(
+              { err: cleanupError, path: thumbnailStoredPath },
+              "Local thumbnail cleanup failed after cloud upload",
+            ),
+          );
+        }
+      }
+
+      const video = await VideoModel.create({ creatorId: userId, caption, hashtags: toHashtags(caption), mediaKey: finalMediaKey, mimeType, mediaSizeBytes: byteSize, mediaWidth, mediaHeight, checksum: checksumHex, durationMs, thumbnailKey, thumbnailMimeType, privacy, commentsAllowed, allowDownloads, status: "published" });
       createdVideoId = video._id;
        const ownerUpdate = await UserModel.updateOne({ _id: userId, status: "active" }, { $inc: { videoCount: 1 } });
        if (ownerUpdate.matchedCount !== 1) throw Object.assign(new Error("Account is unavailable."), { statusCode: 401, code: "ACCOUNT_UNAVAILABLE" });
        ownerCountIncremented = true;
        return reply.code(201).send(envelope({ video: await present(video, userId), checksum: checksumHex }, request.id));
      } catch (error) {
+       for (const key of uploadedCloudKeys) {
+         await deleteMediaFile(key).catch((cleanupError: unknown) =>
+           request.log.error({ err: cleanupError, key }, "Cloud media cleanup failed after upload error"),
+         );
+       }
        if (createdVideoId) await VideoModel.deleteOne({ _id: createdVideoId }).catch((cleanupError: unknown) => request.log.error({ err: cleanupError, videoId: createdVideoId }, "Video record cleanup failed after upload error"));
        if (ownerCountIncremented) await UserModel.updateOne({ _id: userId, videoCount: { $gt: 0 } }, { $inc: { videoCount: -1 } }).catch((cleanupError: unknown) => request.log.error({ err: cleanupError, userId }, "Video count cleanup failed after upload error"));
       if (tempPath) await unlink(tempPath).catch(() => undefined);
@@ -540,8 +576,15 @@ export const videoRoutes: FastifyPluginAsync = async (app) => {
     if (!publicId(videoId)) return fail(reply, 400, "INVALID_VIDEO_ID", "Video id is invalid.", request.id);
     const video = await VideoModel.findOneAndUpdate({ _id: videoId, creatorId: userId, status: "published" }, { $set: { status: "removed" } }, { new: true });
     if (!video) return fail(reply, 404, "VIDEO_UNAVAILABLE", "This video is unavailable or you cannot manage it.", request.id);
-     const cleanup: Promise<unknown>[] = [unlink(mediaPath(video.mediaKey)), VideoReactionModel.deleteMany({ videoId }), CommentModel.deleteMany({ videoId }), UserModel.updateOne({ _id: userId, videoCount: { $gt: 0 } }, { $inc: { videoCount: -1 } })];
-     if (video.thumbnailKey) cleanup.push(unlink(mediaPath(video.thumbnailKey)));
+     const removeMedia = (key: string) =>
+       config.MEDIA_STORAGE_PROVIDER === "local" ? unlink(mediaPath(key)) : deleteMediaFile(key);
+     const cleanup: Promise<unknown>[] = [
+       removeMedia(video.mediaKey),
+       VideoReactionModel.deleteMany({ videoId }),
+       CommentModel.deleteMany({ videoId }),
+       UserModel.updateOne({ _id: userId, videoCount: { $gt: 0 } }, { $inc: { videoCount: -1 } }),
+     ];
+     if (video.thumbnailKey) cleanup.push(removeMedia(video.thumbnailKey));
     const outcomes = await Promise.allSettled(cleanup);
     for (const outcome of outcomes) if (outcome.status === "rejected") request.log.error({ err: outcome.reason, videoId }, "Video cleanup task failed after removal");
     return reply.send(envelope({ removed: true }, request.id));
@@ -556,41 +599,67 @@ export const videoRoutes: FastifyPluginAsync = async (app) => {
     return reply.send(envelope({ video: await present(video, viewerId) }, request.id));
   });
 
-   app.get("/media/:videoId/thumbnail", async (request, reply) => {
-     const { videoId } = request.params as { videoId: string };
-     if (!publicId(videoId)) return fail(reply, 404, "MEDIA_UNAVAILABLE", "Media is unavailable.", request.id);
-     const viewerId = await authenticate(request, { rejectInvalidCredential: false });
+  app.get("/media/:videoId/thumbnail", async (request, reply) => {
+    const { videoId } = request.params as { videoId: string };
+    if (!publicId(videoId)) return fail(reply, 404, "MEDIA_UNAVAILABLE", "Media is unavailable.", request.id);
+    const viewerId = await authenticate(request, { rejectInvalidCredential: false });
     const video = await VideoModel.findById(videoId);
-    if (!video || !video.thumbnailKey || !video.thumbnailMimeType || !(await canView(video, viewerId))) return fail(reply, 404, "MEDIA_UNAVAILABLE", "Media is unavailable.", request.id);
+    if (!video || !video.thumbnailKey || !video.thumbnailMimeType || !(await canView(video, viewerId))) {
+      return fail(reply, 404, "MEDIA_UNAVAILABLE", "Media is unavailable.", request.id);
+    }
     try {
-       const thumbnailPath = mediaPath(video.thumbnailKey);
-      const fileInfo = await stat(thumbnailPath);
       const cache = video.privacy === "public" ? "public, max-age=3600" : "private, no-store";
-       return reply.type(video.thumbnailMimeType).header("Content-Length", String(fileInfo.size)).header("Cache-Control", cache).header("Vary", "Cookie").header("X-Content-Type-Options", "nosniff").send(createReadStream(thumbnailPath));
-    } catch { return fail(reply, 404, "MEDIA_UNAVAILABLE", "Media is unavailable.", request.id); }
+      if (config.MEDIA_STORAGE_PROVIDER === "local") {
+        const path = mediaPath(video.thumbnailKey);
+        const info = await stat(path);
+        return reply.type(video.thumbnailMimeType).header("Content-Length", String(info.size))
+          .header("Cache-Control", cache).header("Vary", "Cookie")
+          .header("X-Content-Type-Options", "nosniff").send(createReadStream(path));
+      }
+      const info = await getMediaInfo(video.thumbnailKey);
+      const stream = await getMediaStream(video.thumbnailKey);
+      return reply.type(video.thumbnailMimeType).header("Content-Length", String(info.size))
+        .header("Cache-Control", cache).header("Vary", "Cookie")
+        .header("X-Content-Type-Options", "nosniff").send(stream);
+    } catch {
+      return fail(reply, 404, "MEDIA_UNAVAILABLE", "Media is unavailable.", request.id);
+    }
   });
 
-   app.get("/media/:videoId", async (request, reply) => {
-     const { videoId } = request.params as { videoId: string };
-     if (!publicId(videoId)) return fail(reply, 404, "MEDIA_UNAVAILABLE", "Media is unavailable.", request.id);
-     const viewerId = await authenticate(request, { rejectInvalidCredential: false });
+  app.get("/media/:videoId", async (request, reply) => {
+    const { videoId } = request.params as { videoId: string };
+    if (!publicId(videoId)) return fail(reply, 404, "MEDIA_UNAVAILABLE", "Media is unavailable.", request.id);
+    const viewerId = await authenticate(request, { rejectInvalidCredential: false });
     const video = await VideoModel.findById(videoId);
     if (!video || !(await canView(video, viewerId))) return fail(reply, 404, "MEDIA_UNAVAILABLE", "Media is unavailable.", request.id);
-     const path = mediaPath(video.mediaKey);
+
+    const local = config.MEDIA_STORAGE_PROVIDER === "local";
+    const path = local ? mediaPath(video.mediaKey) : "";
     try {
-      const fileInfo = await stat(path);
+      const info = local ? await stat(path) : await getMediaInfo(video.mediaKey);
       const range = request.headers.range;
       const cache = video.privacy === "public" ? "public, max-age=3600" : "private, no-store";
+
       if (range) {
         const match = /^bytes=(\d*)-(\d*)$/.exec(range);
-        if (!match) return reply.code(416).header("Content-Range", `bytes */${fileInfo.size}`).send();
-        const start = match[1] ? Number(match[1]) : Math.max(0, fileInfo.size - Number(match[2] || 0));
-        let end = match[2] && match[1] ? Number(match[2]) : fileInfo.size - 1;
-        if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end < start || start >= fileInfo.size) return reply.code(416).header("Content-Range", `bytes */${fileInfo.size}`).send();
-        end = Math.min(end, fileInfo.size - 1);
-         return reply.code(206).type(video.mimeType).header("Accept-Ranges", "bytes").header("Content-Range", `bytes ${start}-${end}/${fileInfo.size}`).header("Content-Length", String(end - start + 1)).header("Cache-Control", cache).header("Vary", "Cookie").header("X-Content-Type-Options", "nosniff").send(createReadStream(path, { start, end }));
+        if (!match) return reply.code(416).header("Content-Range", `bytes */${info.size}`).send();
+        const start = match[1] ? Number(match[1]) : Math.max(0, info.size - Number(match[2] || 0));
+        let end = match[2] && match[1] ? Number(match[2]) : info.size - 1;
+        if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end < start || start >= info.size) {
+          return reply.code(416).header("Content-Range", `bytes */${info.size}`).send();
+        }
+        end = Math.min(end, info.size - 1);
+        const stream = local ? createReadStream(path, { start, end }) : await getMediaStream(video.mediaKey, { start, end });
+        return reply.code(206).type(video.mimeType).header("Accept-Ranges", "bytes")
+          .header("Content-Range", `bytes ${start}-${end}/${info.size}`)
+          .header("Content-Length", String(end - start + 1)).header("Cache-Control", cache)
+          .header("Vary", "Cookie").header("X-Content-Type-Options", "nosniff").send(stream);
       }
-       return reply.type(video.mimeType).header("Accept-Ranges", "bytes").header("Content-Length", String(fileInfo.size)).header("Cache-Control", cache).header("Vary", "Cookie").header("X-Content-Type-Options", "nosniff").send(createReadStream(path));
+
+      const stream = local ? createReadStream(path) : await getMediaStream(video.mediaKey);
+      return reply.type(video.mimeType).header("Accept-Ranges", "bytes")
+        .header("Content-Length", String(info.size)).header("Cache-Control", cache)
+        .header("Vary", "Cookie").header("X-Content-Type-Options", "nosniff").send(stream);
     } catch {
       return fail(reply, 404, "MEDIA_UNAVAILABLE", "Media is unavailable.", request.id);
     }

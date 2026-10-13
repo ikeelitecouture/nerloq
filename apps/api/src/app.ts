@@ -27,6 +27,7 @@ import {
 export interface BuildAppOptions {
   readonly logger?: boolean;
   readonly trustProxy?: boolean;
+  readonly realtime?: boolean;
 }
 
 function createLoggerOptions(): NonNullable<FastifyServerOptions["logger"]> {
@@ -295,7 +296,9 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   app.register(messagingRoutes, { prefix: "/api/v1" });
   app.register(extendedRoutes, { prefix: "/api/v1" });
   registerErrorHandling(app);
-  app.addHook("onReady", async () => attachRealtime(app));
+  if (options.realtime !== false) {
+    app.addHook("onReady", async () => attachRealtime(app));
+  }
 
   return app;
 }

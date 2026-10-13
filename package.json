@@ -2,7 +2,7 @@
   "name": "nerloq",
   "version": "1.0.0",
   "private": true,
-  "description": "NERLOQ \u2014 a next-generation social video, messaging, creator, commerce and real-time media platform.",
+  "description": "NERLOQ — a next-generation social video, messaging, creator, commerce and real-time media platform.",
   "license": "UNLICENSED",
   "author": "NERLOQ",
   "type": "module",
@@ -60,6 +60,7 @@
     "zustand": "^5.0.8"
   },
   "devDependencies": {
+    "@netlify/functions": "^6.0.2",
     "@types/node": "^24.8.0",
     "@types/react": "^19.2.2",
     "@types/react-dom": "^19.2.2",

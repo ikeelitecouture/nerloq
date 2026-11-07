@@ -13,10 +13,12 @@ function followCacheKey(viewerId: string, creatorId: string): string {
   return `${viewerId}:${creatorId}`;
 }
 
-export function VideoFeed({ type, videoId }: { readonly type: "for_you" | "following"; readonly videoId?: string }): React.JSX.Element {
+export function VideoFeed({ type, videoId, immersive = false }: { readonly type: "for_you" | "following"; readonly videoId?: string; readonly immersive?: boolean }): React.JSX.Element {
   const { state } = useAuth();
   const [videos, setVideos] = React.useState<Video[]>([]);
   const cursorRef = React.useRef<string | null>(null);
+  const seenVideoIdsRef = React.useRef<Set<string>>(new Set());
+  const feedRef = React.useRef<HTMLDivElement>(null);
   const [hasMore, setHasMore] = React.useState(false);
   const [loading, setLoading] = React.useState(true);
   const [loadingMore, setLoadingMore] = React.useState(false);
@@ -45,7 +47,19 @@ export function VideoFeed({ type, videoId }: { readonly type: "for_you" | "follo
         cursorRef.current = null;
         setHasMore(false);
       } else {
-        const response: FeedResponse = await api.feed(type, next ? cursorRef.current ?? undefined : undefined);
+        const excluded = type === "for_you" && next
+          ? [...seenVideoIdsRef.current]
+          : [];
+        const response: FeedResponse = await api.feed(
+          type,
+          next ? cursorRef.current ?? undefined : undefined,
+          excluded
+        );
+
+        if (type === "for_you") {
+          if (!next) seenVideoIdsRef.current.clear();
+          response.items.forEach(item => seenVideoIdsRef.current.add(item.id));
+        }
         setVideos(current => {
           if (!next) return [...response.items];
           const known = new Set(current.map(item => item.id));
@@ -71,14 +85,36 @@ export function VideoFeed({ type, videoId }: { readonly type: "for_you" | "follo
 
   React.useEffect(() => {
     if (!hasMore || loadingMore) return;
-    const sentinel = document.querySelector("[data-feed-sentinel]");
+    const sentinel = feedRef.current?.querySelector("[data-feed-sentinel]");
     if (!sentinel) return;
     const observer = new IntersectionObserver(entries => {
       if (entries.some(entry => entry.isIntersecting)) void load(true);
-    }, { rootMargin: "500px" });
+    }, { root: immersive ? feedRef.current : null, rootMargin: "800px 0px" });
     observer.observe(sentinel);
     return () => observer.disconnect();
-  }, [hasMore, loadingMore, load]);
+  }, [hasMore, loadingMore, load, immersive]);
+
+  React.useEffect(() => {
+    if (!videos.length) return;
+    const root = immersive ? feedRef.current : null;
+    const ratios = new Map<Element, number>();
+    const observer = new IntersectionObserver(entries => {
+      for (const entry of entries) ratios.set(entry.target, entry.intersectionRatio);
+      let bestId: string | null = null;
+      let bestRatio = 0;
+      for (const [element, ratio] of ratios) {
+        if (ratio > bestRatio) {
+          bestRatio = ratio;
+          bestId = (element as HTMLElement).dataset["videoId"] ?? null;
+        }
+      }
+      if (bestId && bestRatio >= 0.55) setActiveId(bestId);
+      else setActiveId(current => current && [...ratios].some(([element, ratio]) => (element as HTMLElement).dataset["videoId"] === current && ratio < 0.15) ? null : current);
+    }, { root, threshold: [0, 0.15, 0.35, 0.55, 0.75, 1] });
+    const cards = feedRef.current?.querySelectorAll<HTMLElement>("[data-video-id]") ?? document.querySelectorAll<HTMLElement>("[data-video-id]");
+    cards.forEach(card => observer.observe(card));
+    return () => observer.disconnect();
+  }, [videos, immersive]);
 
   async function change(videoIdToChange: string, key: "likedByViewer" | "savedByViewer" | "repostedByViewer", action: "like" | "save" | "repost") {
     if (state.status !== "signed-in") { setNotice("Sign in to interact with videos on NERLOQ."); return; }
@@ -104,16 +140,27 @@ export function VideoFeed({ type, videoId }: { readonly type: "for_you" | "follo
   if (error && videos.length === 0) return <div className="feed-state feed-state-error"><span className="eyebrow">FEED UNAVAILABLE</span><h2>We couldn’t reach your feed.</h2><p>{error}</p><button className="primary-action" onClick={() => void load(false)}>Try again</button></div>;
   if (!loading && videos.length === 0) return <section className="feed-empty"><div className="empty-art"><div className="art-orbit orbit-a"/><div className="art-orbit orbit-b"/><div className="art-center"><Play size={26}/></div><span className="art-spark spark-a"/><span className="art-spark spark-b"/></div><span className="eyebrow">A FRESH FRAME</span><h2>{type === "following" ? "Your circle starts here." : "Your feed is finding its rhythm."}</h2><p>{type === "following" ? "Follow creators whose perspective you want in your day. Their new videos will appear here." : "There are no published videos yet. Create the first one, or return when creators share their work."}</p><div className="empty-actions"><Link className="primary-action" to="/create">Create a video</Link><Link className="quiet-action" to="/discover">Explore NERLOQ</Link></div></section>;
 
+  function refreshFeed() {
+    if (videoId || loading) return;
+    feedRef.current?.scrollTo({ top: 0, behavior: "smooth" });
+    setActiveId(null);
+    void load(false);
+  }
+
   const viewerId = state.status === "signed-in" ? state.user.id : "";
-  return <div className="video-feed" style={{ scrollSnapType: "y mandatory", overflowY: "scroll", height: "100vh" }} aria-label={type === "following" ? "Following video feed" : "For you video feed"}>
-    {videos.map(video => <VideoCard key={video.id} style={{ scrollSnapAlign: "start", height: "100vh" }} video={video} viewerId={viewerId} active={activeId === video.id} autoplay={playbackSettings.autoplay} muteByDefault={playbackSettings.muteByDefault} onActive={setActiveId} onLike={() => void change(video.id, "likedByViewer", "like")} onSave={() => void change(video.id, "savedByViewer", "save")} onRepost={() => void change(video.id, "repostedByViewer", "repost")} onComments={() => setCommentsFor(video)} onShare={shareCount => setVideos(items => items.map(item => item.id === video.id ? { ...item, shareCount } : item))} onNotice={setNotice} onMute={id => { setVideos(items => items.filter(item => item.creator.id !== id)); setNotice("Creator muted. Their videos will no longer appear in your feeds."); }} onBlock={id => { setVideos(items => items.filter(item => item.creator.id !== id)); setNotice("Creator blocked. You can manage blocked accounts in Settings."); }} />)}
+  const activeIndex = videos.findIndex(video => video.id === activeId);
+  return <div ref={feedRef} className={`video-feed${immersive ? " video-feed-immersive" : ""}`} aria-label={type === "following" ? "Following video feed" : "For you video feed"}>
+    {!videoId && <button className="feed-refresh" type="button" onClick={refreshFeed} disabled={loading} aria-label="Refresh video feed">
+      {loading ? "Refreshing…" : "↻ Refresh feed"}
+    </button>}
+    {videos.map((video, index) => <VideoCard key={video.id} video={video} viewerId={viewerId} active={activeId === video.id} loadMedia={activeId === video.id || index === activeIndex + 1} preload={activeId === video.id || index === activeIndex + 1 ? "metadata" : "none"} autoplay={playbackSettings.autoplay} muteByDefault={false} onLike={() => void change(video.id, "likedByViewer", "like")} onSave={() => void change(video.id, "savedByViewer", "save")} onRepost={() => void change(video.id, "repostedByViewer", "repost")} onComments={() => setCommentsFor(video)} onShare={shareCount => setVideos(items => items.map(item => item.id === video.id ? { ...item, shareCount } : item))} onNotice={setNotice} onMute={id => { setVideos(items => items.filter(item => item.creator.id !== id)); setNotice("Creator muted. Their videos will no longer appear in your feeds."); }} onBlock={id => { setVideos(items => items.filter(item => item.creator.id !== id)); setNotice("Creator blocked. You can manage blocked accounts in Settings."); }} />)}
     {hasMore && <div className="feed-more" data-feed-sentinel>{loadingMore ? "Loading more videos…" : error ? <button className="quiet-action" onClick={() => void load(true)}>Retry loading more</button> : ""}</div>}
     {notice && <div className="feed-toast" role="status">{notice}<button aria-label="Dismiss" onClick={() => setNotice("")}><X size={14}/></button></div>}
     {commentsFor && <CommentsDialog video={commentsFor} viewerId={viewerId} onClose={() => setCommentsFor(null)} onComment={() => setVideos(items => items.map(item => item.id === commentsFor.id ? { ...item, commentCount: item.commentCount + 1 } : item))}/>}
   </div>;
 }
 
-function VideoCard({ video, viewerId, active, autoplay, muteByDefault, onActive, onLike, onSave, onRepost, onComments, onShare, onNotice, onMute, onBlock, style }: { video: Video; viewerId: string; active: boolean; autoplay: boolean; muteByDefault: boolean; onActive: (id: string | null) => void; onLike: () => void; onSave: () => void; onRepost: () => void; onComments: () => void; onShare: (count: number) => void; onNotice: (message: string) => void; onMute: (creatorId: string) => void; onBlock: (creatorId: string) => void; style?: React.CSSProperties }): React.JSX.Element {
+function VideoCard({ video, viewerId, active, loadMedia, preload, autoplay, muteByDefault, onLike, onSave, onRepost, onComments, onShare, onNotice, onMute, onBlock }: { video: Video; viewerId: string; active: boolean; loadMedia: boolean; preload: "none" | "metadata"; autoplay: boolean; muteByDefault: boolean; onLike: () => void; onSave: () => void; onRepost: () => void; onComments: () => void; onShare: (count: number) => void; onNotice: (message: string) => void; onMute: (creatorId: string) => void; onBlock: (creatorId: string) => void }): React.JSX.Element {
   const media = React.useRef<HTMLVideoElement>(null);
   const menu = React.useRef<HTMLDivElement>(null);
   const [muted, setMuted] = React.useState(muteByDefault);
@@ -126,8 +173,9 @@ function VideoCard({ video, viewerId, active, autoplay, muteByDefault, onActive,
   const [reportOpen, setReportOpen] = React.useState(false);
   const [blockPrompt, setBlockPrompt] = React.useState(false);
   const [mediaError, setMediaError] = React.useState(false);
+  const [buffering, setBuffering] = React.useState(false);
   const counted = React.useRef(false);
-  const paused = manualPlaying ?? !autoplay;
+  const paused = manualPlaying === null ? !autoplay : !manualPlaying;
   const isOwn = followState === "own" || viewerId === video.creator.id;
 
   React.useEffect(() => {
@@ -149,18 +197,6 @@ function VideoCard({ video, viewerId, active, autoplay, muteByDefault, onActive,
     });
     return () => { activeRequest = false; };
   }, [video.creator.id, video.creator.username, viewerId]);
-
-  React.useEffect(() => {
-    const node = media.current;
-    if (!node) return;
-    const observer = new IntersectionObserver(entries => {
-      const entry = entries[0];
-      if (entry && entry.intersectionRatio >= .72) onActive(video.id);
-      else if (entry && entry.intersectionRatio < .2) onActive(null);
-    }, { threshold: [0, .2, .72, 1] });
-    observer.observe(node);
-    return () => observer.disconnect();
-  }, [onActive, video.id]);
 
   React.useEffect(() => {
     const node = media.current;
@@ -212,10 +248,12 @@ function VideoCard({ video, viewerId, active, autoplay, muteByDefault, onActive,
   }
 
   function togglePlayback() {
-    const next = paused;
-    setManualPlaying(next);
-    if (next) void media.current?.play().catch(() => setManualPlaying(false));
-    else media.current?.pause();
+    const node = media.current;
+    if (!node) return;
+    const shouldPlay = node.paused;
+    setManualPlaying(shouldPlay);
+    if (shouldPlay) void node.play().catch(() => setManualPlaying(false));
+    else node.pause();
   }
 
   async function muteCreator() {
@@ -228,9 +266,18 @@ function VideoCard({ video, viewerId, active, autoplay, muteByDefault, onActive,
     catch (cause) { onNotice(cause instanceof Error ? cause.message : "Creator could not be blocked."); }
   }
 
-  return <article className="video-card" style={style} aria-label={`Video by ${video.creator.displayName}`}>
+  return <article className={`video-card${paused ? " is-paused" : ""}`} data-video-id={video.id} aria-label={`Video by ${video.creator.displayName}`}>
     <div className="video-media-wrap">
-      <video ref={media} className="video-media" src={resolveMediaUrl(video.media.url)} poster={resolveMediaUrl(video.thumbnailUrl)} playsInline loop preload={active ? "auto" : "metadata"} muted={muted} onClick={togglePlayback} onLoadedMetadata={event => setDuration(event.currentTarget.duration || duration)} onTimeUpdate={event => updateTime(event.currentTarget)} onError={() => setMediaError(true)} aria-label={`Video: ${video.caption || `by ${video.creator.displayName}`}`}/>
+      <video ref={media} className="video-media" src={loadMedia ? resolveMediaUrl(video.media.url) : undefined} poster={loadMedia ? resolveMediaUrl(video.thumbnailUrl) : undefined} playsInline loop preload={preload} muted={muted} onClick={togglePlayback} onLoadedMetadata={event => setDuration(event.currentTarget.duration || duration)} onTimeUpdate={event => updateTime(event.currentTarget)}
+      onLoadStart={() => setBuffering(true)}
+      onWaiting={() => setBuffering(true)}
+      onStalled={() => setBuffering(true)}
+      onPlaying={() => setBuffering(false)}
+      onCanPlay={() => setBuffering(false)}
+      onSeeking={() => setBuffering(true)}
+      onSeeked={() => setBuffering(false)}
+      onError={() => { setBuffering(false); setMediaError(true); }} aria-label={`Video: ${video.caption || `by ${video.creator.displayName}`}`}/>
+      {buffering && active && !mediaError && <div className="video-buffering" role="status" aria-label="Loading video"><span/></div>}
       {mediaError && <div className="video-media-error" role="alert"><span>Video unavailable</span><button className="quiet-action" onClick={() => { setMediaError(false); media.current?.load(); }}>Try again</button></div>}
       <button className="video-play-toggle" onClick={togglePlayback} aria-label={paused ? "Play video" : "Pause video"}>{paused ? <Play size={24}/> : <Pause size={21}/>}</button>
       <div className="video-progress"><span style={{ width: `${progress}%` }}/><input type="range" min="0" max="100" step="0.1" value={progress} onChange={event => { const node = media.current; if (!node || !node.duration) return; node.currentTime = Number(event.target.value) / 100 * node.duration; setProgress(Number(event.target.value)); }} aria-label="Video progress"/></div>
@@ -287,6 +334,7 @@ function CommentsDialog({ video, viewerId, onClose, onComment }: { video: Video;
   const [commentsClosed, setCommentsClosed] = React.useState(false);
   const panel = React.useRef<HTMLElement>(null);
   const cursorRef = React.useRef<string | null>(null);
+  const feedRef = React.useRef<HTMLDivElement>(null);
 
   const load = React.useCallback(async (next = false) => {
     if (next) setLoadingMore(true); else setLoading(true);

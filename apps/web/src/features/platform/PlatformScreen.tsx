@@ -216,7 +216,7 @@ export function PlatformScreen(): React.JSX.Element {
   async function leave() { await signOut(); navigate("/login", { replace: true }); }
   function submitSearch(value: string, type = searchType) { const term = value.trim(); if (term.length >= 2) navigate(`/search?q=${encodeURIComponent(term)}&type=${type}`); }
 
-  return <div className="platform-shell">
+  return <div className={`platform-shell ${route === "/home" ? "is-home-feed" : ""}`}>
     <aside className={`platform-sidebar ${menuOpen ? "is-open" : ""}`}>
       <div className="sidebar-head"><Link to="/home" className="brand-lockup"><span className="brand-mark"><img src="/nerloq.png" alt="" /></span><span className="brand-name">NERLOQ</span></Link><button className="icon-button sidebar-close" aria-label="Close menu" onClick={() => setMenuOpen(false)}><X size={18}/></button></div>
       <div className="sidebar-label">YOUR SPACE</div>
@@ -230,12 +230,12 @@ export function PlatformScreen(): React.JSX.Element {
       <div className="sidebar-profile"><div className="mini-avatar">{state.user.displayName.slice(0,1).toUpperCase()}</div><div className="sidebar-user"><strong>{state.user.displayName}</strong><span>@{state.user.username}</span></div><button className="icon-button" aria-label="Sign out" onClick={() => void leave()}><LogOut size={16}/></button></div>
     </aside>
     {menuOpen && <button className="mobile-scrim" aria-label="Close navigation" onClick={() => setMenuOpen(false)}/>}
-    <main className="platform-main" id="main-content" tabIndex={-1}>
+    <main className={`platform-main${isFeed && !isVideoPage ? " platform-main-video-feed" : ""}`} id="main-content" tabIndex={-1}>
       <header className="platform-topbar"><button className="icon-button mobile-menu" aria-label="Open navigation" onClick={() => setMenuOpen(true)}><Menu size={20}/></button><div className="topbar-context"><span>NERLOQ /</span> {page.title}</div><label className="global-search"><Search size={17}/><input value={query} onChange={e=>setQuery(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")submitSearch(query);}} placeholder="Search people, videos or hashtags" aria-label="Search NERLOQ"/><kbd>⌘ K</kbd></label><Link to="/profile" className="top-avatar" aria-label="Your profile">{state.user.displayName.slice(0,1).toUpperCase()}</Link></header>
-      <div className="platform-content">
+      <div className={`platform-content${isFeed && !isVideoPage ? " platform-content-video-feed" : ""}`}>
         {route==="/discover" && <section className="discovery-search"><div><span className="eyebrow">SEARCH NERLOQ</span><h1>Find your next<br/><em>point of view.</em></h1><p>Search creators, videos and hashtags from one calm workspace.</p></div><div className="discovery-input"><Search size={20}/><input value={query} onChange={e=>setQuery(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")submitSearch(query);}} placeholder="Try a creator or a topic" aria-label="Search creators, videos and hashtags"/><button aria-label="Search" onClick={()=>query.trim().length>=2?submitSearch(query):setNotice("Enter at least two characters to search.")}><span>Search</span></button></div>{notice&&<div className="inline-note" role="status">{notice}</div>}<div className="discovery-categories" role="group" aria-label="Search type"><button type="button" className={`category-chip ${searchType==="all"?"selected":""}`} onClick={()=>setSearchType("all")}><Compass size={15}/> All</button><button type="button" className={`category-chip ${searchType==="creators"?"selected":""}`} onClick={()=>setSearchType("creators")}><UserRound size={15}/> Creators</button><button type="button" className={`category-chip ${searchType==="videos"?"selected":""}`} onClick={()=>setSearchType("videos")}><Film size={15}/> Videos</button><button type="button" className={`category-chip ${searchType==="hashtags"?"selected":""}`} onClick={()=>setSearchType("hashtags")}><span>#</span> Hashtags</button></div></section>}
         {!isVideoPage&&route!=="/discover"&&<div className="page-heading"><div><span className="eyebrow">{page.kicker}</span><h1>{page.title}</h1><p>{page.copy}</p></div>{(route==="/home"||route==="/following")&&<button className="filter-button" onClick={()=>navigate("/settings")}><SlidersHorizontal size={16}/> Preferences</button>}</div>}
-        {isFeed&&<VideoFeed type={route==="/following"?"following":"for_you"} {...(videoMatch?{videoId:decodeURIComponent(videoMatch[1]!)}:{})}/>}
+        {isFeed&&<VideoFeed type={route==="/following"?"following":"for_you"} immersive={!isVideoPage} {...(videoMatch?{videoId:decodeURIComponent(videoMatch[1]!)}:{})}/>}
         {profileMatch&&<PublicProfilePage username={decodeURIComponent(profileMatch[1]!)} />}
         {route==="/search"&&<SearchResultsPage query={searchParams.get("q")??""} type={(searchParams.get("type") as "all"|"creators"|"videos"|"hashtags"|null)??"all"}/>}
         {hashtagMatch&&<HashtagPage tag={decodeURIComponent(hashtagMatch[1]!)} />}

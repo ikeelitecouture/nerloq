@@ -198,7 +198,12 @@ export const api = {
   me: () => request<{ user: User }>("/auth/me"),
   refresh: () => request<SessionView>("/auth/refresh", { method: "POST" }),
   logout: () => request<{ signedOut: boolean }>("/auth/logout", { method: "POST" }),
-  feed: (type: "for_you" | "following", cursor?: string) => request<import("@nerloq/shared").FeedResponse>(`/feed?type=${type}&limit=10${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`),
+  feed: (type: "for_you" | "following", cursor?: string, excludeVideoIds: readonly string[] = []) => {
+    const params = new URLSearchParams({ type, limit: "10" });
+    if (cursor) params.set("cursor", cursor);
+    if (excludeVideoIds.length) params.set("excludeVideoIds", excludeVideoIds.join(","));
+    return request<import("@nerloq/shared").FeedResponse>(`/feed?${params.toString()}`);
+  },
   video: (videoId: string) => request<{ video: import("@nerloq/shared").Video }>(`/videos/${encodeURIComponent(videoId)}`),
   myVideos: () => request<readonly import("@nerloq/shared").Video[]>("/me/videos"),
   creatorAnalytics: () => request<{ scope: "lifetime"; videos: number; views: number; likes: number; comments: number; shares: number; saves: number; updatedAt: string }>("/me/analytics"),

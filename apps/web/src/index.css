@@ -181,3 +181,129 @@
 .platform-footer-links{display:flex;justify-content:center;gap:10px 17px;flex-wrap:wrap}
 @media(max-width:760px){.legal-body{grid-template-columns:1fr;gap:25px;padding-top:26px}.legal-toc{position:static;grid-template-columns:repeat(2,minmax(0,1fr));gap:3px}.legal-toc>.eyebrow{grid-column:1/-1}.legal-toc a{padding:8px 5px}.legal-values{gap:8px}.legal-values article{padding:15px;min-height:120px}.legal-section{grid-template-columns:25px minmax(0,1fr);gap:10px}}
 @media(max-width:520px){.legal-header{height:65px;padding:0 15px}.legal-header-actions{gap:6px}.legal-header-actions .primary-action,.legal-header-actions .quiet-action{min-height:33px;padding:0 9px;font-size:9px}.legal-wrap{width:calc(100% - 30px)}.legal-breadcrumb{margin-top:24px;font-size:8px}.legal-hero{padding-top:22px}.legal-hero h1{font-size:clamp(39px,12vw,58px)}.legal-meta{font-size:8px}.legal-values{grid-template-columns:1fr}.legal-values article{min-height:unset}.legal-footer-bottom{font-size:8px}.legal-contact-card{gap:12px;padding:17px}.legal-contact-icon{flex-basis:38px;height:38px}}
+
+/* Inbox navigation and WhatsApp-style conversation-first layout. */
+.inbox-topbar{display:flex;align-items:center;justify-content:space-between;gap:16px;margin:0 0 15px;padding:2px 1px}.inbox-topbar h2{margin:6px 0 3px;color:#e9e7de;font:500 23px var(--display)}.inbox-topbar p{margin:0;color:#85877e;font-size:10px}.inbox-home-link{display:inline-flex;align-items:center;gap:7px;min-height:36px;padding:0 12px;border:1px solid #ffffff20;border-radius:6px;color:#d7c99e;text-decoration:none;font-size:10px}.inbox-home-link:hover{border-color:#c5a85d88;background:#c5a85d12}.inbox-back-button{display:none;align-items:center;gap:3px;padding:7px 8px;border:1px solid #ffffff1b;border-radius:6px;background:transparent;color:#e4dfd1;font-size:10px}.messaging-shell.show-conversations .conversation-list{display:block}
+@media(max-width:650px){.inbox-topbar{margin-bottom:12px}.inbox-topbar h2{font-size:21px}.messaging-shell{height:min(70dvh,720px);min-height:480px;grid-template-columns:minmax(0,1fr)}.messaging-shell:not(.has-selected) .message-pane{display:none}.messaging-shell.has-selected .conversation-list{display:none}.messaging-shell.has-selected .message-pane{display:flex;min-height:0}.messaging-shell.has-selected .inbox-back-button{display:inline-flex}.message-header{gap:8px;padding:10px}.message-header .conversation-avatar{width:35px;height:35px}.inbox-home-link{min-height:34px;padding:0 10px}}
+
+
+/* NERLOQ home: edge-to-edge, full-viewport vertical video feed.
+   Scoped only to /home so other screens retain their existing styling. */
+.platform-shell.is-home-feed{height:100dvh;min-height:100dvh;overflow:hidden}
+.is-home-feed .platform-main{position:relative;height:100dvh;min-height:0;overflow:hidden}
+.is-home-feed .platform-topbar{position:absolute;inset:0 0 auto;height:62px;z-index:11;border-bottom:0;background:linear-gradient(180deg,#080907b8 0%,#08090735 72%,transparent 100%);backdrop-filter:none}
+.is-home-feed .platform-content{width:100%;max-width:none;height:100dvh;min-height:0;margin:0;padding:0;flex:1;overflow:hidden}
+.is-home-feed .page-heading,.is-home-feed .platform-footer{display:none}
+.is-home-feed .video-feed{display:block;width:100%;height:100dvh!important;min-height:0;margin:0;overflow-x:hidden;overflow-y:auto;overscroll-behavior-y:contain;scroll-snap-type:y mandatory;scrollbar-width:none}
+.is-home-feed .video-feed::-webkit-scrollbar{display:none}
+.is-home-feed .video-card{width:100%;height:100dvh!important;min-height:100dvh;max-height:none;margin:0;border:0;border-radius:0;box-shadow:none;scroll-snap-align:start;scroll-snap-stop:always}
+.is-home-feed .feed-more{min-height:1px}
+.is-home-feed .feed-state,.is-home-feed .feed-empty{min-height:100dvh;height:100dvh;border:0;border-radius:0}
+.is-home-feed .mobile-tabs{background:#10110dcc;border-top-color:#ffffff20;backdrop-filter:blur(10px)}
+@media(max-width:650px){
+  .platform-shell.is-home-feed{height:100dvh;min-height:100dvh}
+  .is-home-feed .platform-main{height:100dvh;min-height:0;padding:0}
+  .is-home-feed .platform-topbar{position:absolute;inset:0 0 auto;height:54px;padding:0 13px;background:linear-gradient(180deg,#080907a8 0%,transparent 100%)}
+  .is-home-feed .platform-content{width:100%;height:100dvh;padding:0;margin:0}
+  .is-home-feed .video-feed{height:100dvh!important}
+  .is-home-feed .video-card{height:100dvh!important;min-height:100dvh;width:100%;border:0;border-radius:0}
+  .is-home-feed .mobile-tabs{height:calc(63px + env(safe-area-inset-bottom));padding-bottom:env(safe-area-inset-bottom)}
+}
+
+
+/* NERLOQ full-viewport video feed overlay v2 */
+.platform-main-video-feed{position:relative;height:100dvh;min-height:100dvh;overflow:hidden;padding-bottom:0}
+.platform-main-video-feed .platform-topbar{position:absolute;inset:0 0 auto;z-index:30;flex:0 0 68px;height:68px;border-bottom:0;background:linear-gradient(180deg,#080907e8 0%,#0809079c 58%,transparent 100%);backdrop-filter:none}
+.platform-content-video-feed{position:absolute;inset:0;width:100%;height:100dvh;min-height:100dvh;flex:0 0 100%;display:block;margin:0;padding:0;overflow:hidden}
+.platform-content-video-feed>.page-heading{display:none}
+.platform-main-video-feed .platform-footer{display:none}
+.video-feed-immersive{display:block;width:100%;height:100dvh;min-height:100dvh;overflow-x:hidden;overflow-y:auto;overscroll-behavior-y:contain;scroll-snap-type:y mandatory;scroll-snap-stop:always;scrollbar-width:none;-webkit-overflow-scrolling:touch;touch-action:pan-y;background:#080907}
+.video-feed-immersive::-webkit-scrollbar{display:none}
+.video-feed-immersive .video-card{display:block;width:100%;height:100dvh;min-height:100dvh;max-height:none;position:relative;margin:0;border:0;border-radius:0;box-shadow:none;scroll-snap-align:start;scroll-snap-stop:always}
+.video-feed-immersive .video-media{touch-action:pan-y}
+.video-feed-immersive .feed-more{height:1px;min-height:1px;overflow:hidden}
+.video-feed-immersive .video-play-toggle{opacity:0}
+.video-feed-immersive .video-card.is-paused .video-play-toggle{opacity:.85}
+.platform-main-video-feed .feed-state,.platform-main-video-feed .feed-empty{height:100dvh;min-height:100dvh;border:0;border-radius:0}
+.platform-main-video-feed ~ .mobile-tabs{background:linear-gradient(0deg,#080907f0 0%,#080907b0 65%,transparent 100%);border-top:0;backdrop-filter:none}
+@media(max-width:650px){
+.platform-main-video-feed{padding-bottom:0}
+.platform-main-video-feed .platform-topbar{height:58px;flex-basis:58px;padding:0 15px}
+.platform-content-video-feed{height:100dvh}
+.video-feed-immersive .video-card{height:100dvh;min-height:100dvh}
+.video-feed-immersive .video-top-tools{top:68px;left:12px;right:11px}
+.video-feed-immersive .video-copy{left:15px;right:72px;bottom:calc(78px + env(safe-area-inset-bottom))}
+.video-feed-immersive .video-rail{right:8px;bottom:calc(78px + env(safe-area-inset-bottom));gap:12px}
+.video-feed-immersive .feed-toast{right:10px;bottom:calc(80px + env(safe-area-inset-bottom))}
+.platform-main-video-feed ~ .mobile-tabs{height:63px;background:linear-gradient(0deg,#080907f5 0%,#080907c9 75%,transparent 100%);border-top:0;backdrop-filter:none}
+}
+
+
+/* NERLOQ video loading and purple seek timeline */
+.video-buffering {
+  position: absolute;
+  z-index: 5;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  background: rgba(0, 0, 0, .12);
+}
+
+.video-buffering span {
+  width: 46px;
+  height: 46px;
+  border: 4px solid rgba(255,255,255,.22);
+  border-top-color: #a78bfa;
+  border-right-color: #a78bfa;
+  border-radius: 50%;
+  animation: nerloq-video-spin .75s linear infinite;
+}
+
+@keyframes nerloq-video-spin {
+  to { transform: rotate(360deg); }
+}
+
+.video-progress {
+  inset: auto 0 0;
+  height: 4px;
+  background: rgba(255,255,255,.38);
+}
+
+.video-progress span {
+  background: #a78bfa;
+  box-shadow: 0 0 8px rgba(167,139,250,.8);
+}
+
+/* NERLOQ feed-only refresh control */
+.video-feed-immersive {
+  position: relative;
+}
+
+.video-feed-immersive .feed-refresh {
+  position: absolute;
+  z-index: 30;
+  top: 14px;
+  right: 14px;
+  padding: 9px 13px;
+  border: 1px solid rgba(255,255,255,.25);
+  border-radius: 24px;
+  color: #fff;
+  background: rgba(15,15,20,.65);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.video-feed-immersive .feed-refresh:disabled {
+  opacity: .65;
+  cursor: wait;
+}
+
+/* Lift the video progress timeline above the bottom screen controls */
+.video-progress {
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 72px);
+}
+

@@ -1,0 +1,17 @@
+NERLOQ VIDEO FEED PATCH
+
+Files updated:
+- apps/web/src/features/platform/VideoFeed.tsx
+- apps/web/src/features/platform/PlatformScreen.tsx
+- apps/web/src/index.css
+
+Changes:
+- Corrected the paused/playing state so tapping a paused video resumes it and tapping a playing video pauses it.
+- Only attaches video media URLs to the currently visible video and the next video; other feed cards do not start fetching their video files.
+- Uses metadata-only preload rather than auto-preloading full video files.
+- Uses one visibility observer rooted in the feed to select the most visible video for playback.
+- Makes For You and Following feeds immersive, full-height, vertically swipeable snap feeds on mobile and desktop.
+- Hides the nested feed scrollbar and prevents the old card-box layout on the main feeds.
+- Keeps the existing API media route and byte-range streaming implementation unchanged.
+
+Apply these files over the matching paths in the existing project. This patch does not include or modify .env, database data, account data, or Supabase credentials.

@@ -1,0 +1,36 @@
+NERLOQ — 45 MB CLOUD MEDIA SEGMENT PATCH
+===========================================
+
+What changed
+------------
+1. Cloud video uploads are split server-side into separate objects of at most
+   45 MiB (45 * 1024 * 1024 bytes) before being sent to the configured
+   S3-compatible storage provider. This stays below a 50 MB per-object limit.
+2. Video records now store the ordered object keys in `mediaSegments`.
+   Existing records without this field continue to use their original
+   single-object `mediaKey`.
+3. The video media endpoint now calculates total size across segments and
+   supports normal and HTTP byte-range streaming across segment boundaries.
+   This keeps the browser's video URL and playback interface unchanged.
+4. Video deletion removes every segment and the thumbnail.
+5. The create screen explains that large videos are stored in secure parts of
+   up to 45 MB each.
+
+Important limitation
+--------------------
+The existing browser-to-API upload is still one multipart HTTP request. This
+patch segments the objects sent from the API to Supabase, solving the Supabase
+50 MB per-object limit. It does not yet make the browser-to-API transfer
+resumable or split it into separate 45 MB requests. A separate resumable
+client-upload integration would be needed to recover individual network
+interruptions without restarting that transfer.
+
+Deployment
+----------
+Replace the project files with this archive while keeping your current `.env`
+and database. This archive intentionally excludes `.env` and other env
+backups. Do not overwrite your real environment file.
+
+After copying, run the project's normal build/typecheck commands before
+restarting the API. Test with a new video larger than 50 MB, then verify
+playback, seeking, and deletion. Existing videos are not migrated or modified.

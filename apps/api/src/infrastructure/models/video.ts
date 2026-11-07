@@ -16,6 +16,8 @@ export interface VideoRecord {
   thumbnailUrl: string | null;
   thumbnailKey: string | null;
   thumbnailMimeType: string | null;
+  processingStatus?: "pending" | "processing" | "ready" | "failed";
+  playbackManifestKey?: string | null;
   privacy: VideoPrivacy;
   status: "published" | "removed";
   commentsAllowed: boolean;
@@ -45,6 +47,8 @@ const schema = new mongoose.Schema<VideoRecord>({
   thumbnailUrl: { type: String, default: null },
   thumbnailKey: { type: String, default: null },
   thumbnailMimeType: { type: String, enum: ["image/jpeg", "image/png", "image/webp", null], default: null },
+  processingStatus: { type: String, enum: ["pending", "processing", "ready", "failed"] },
+  playbackManifestKey: { type: String, default: null },
   privacy: { type: String, enum: ["public", "followers", "private"], default: "public", index: true },
   status: { type: String, enum: ["published", "removed"], default: "published", index: true },
   commentsAllowed: { type: Boolean, default: true },

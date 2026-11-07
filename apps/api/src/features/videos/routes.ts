@@ -27,6 +27,7 @@ import { disconnectRealtimeUser, emitToUser } from "../../infrastructure/realtim
 import { userSettingsSchema } from "@nerloq/validation";
 import { inspectVideoMetadata, isSafeCoverImage, isSupportedVideoContent } from "./media-validation.js";
 import { decodeCursor, encodeCursor } from "../../infrastructure/pagination.js";
+import { enqueueVideoProcessing } from "./video-processing-queue.js";
 import { deleteMediaFile, getMediaInfo, getMediaStream, uploadMediaFile } from "../../infrastructure/storage/media-storage.js";
 
 const MEDIA_ROOT = join(process.cwd(), "var", "media");
@@ -43,16 +44,50 @@ function mediaPath(key: string): string {
 
 type MediaSegmentInfo = { key: string; size: number; start: number; end: number };
 
-async function cloudSegmentsInfo(keys: readonly string[]): Promise<{ size: number; segments: MediaSegmentInfo[] }> {
-  const segments: MediaSegmentInfo[] = [];
-  let offset = 0;
-  for (const key of keys) {
-    const info = await getMediaInfo(key);
-    segments.push({ key, size: info.size, start: offset, end: offset + info.size - 1 });
-    offset += info.size;
+function cloudSegmentsInfo(
+  keys: readonly string[],
+  totalSize: number,
+  isSegmented: boolean,
+): { size: number; segments: MediaSegmentInfo[] } {
+  if (!Number.isSafeInteger(totalSize) || totalSize <= 0 || !keys.length) {
+    throw new Error("Media segment information is unavailable.");
   }
-  if (!segments.length) throw new Error("Media segments are unavailable.");
-  return { size: offset, segments };
+
+  if (!isSegmented) {
+    if (keys.length !== 1) {
+      throw new Error("Invalid unsegmented media record.");
+    }
+
+    return {
+      size: totalSize,
+      segments: [{
+        key: keys[0]!,
+        size: totalSize,
+        start: 0,
+        end: totalSize - 1,
+      }],
+    };
+  }
+
+  const expectedCount = Math.ceil(totalSize / CLOUD_MEDIA_SEGMENT_BYTES);
+
+  if (keys.length !== expectedCount) {
+    throw new Error("Media segment count does not match recorded video size.");
+  }
+
+  const segments: MediaSegmentInfo[] = keys.map((key, index) => {
+    const start = index * CLOUD_MEDIA_SEGMENT_BYTES;
+    const size = Math.min(CLOUD_MEDIA_SEGMENT_BYTES, totalSize - start);
+
+    return {
+      key,
+      size,
+      start,
+      end: start + size - 1,
+    };
+  });
+
+  return { size: totalSize, segments };
 }
 
 function cloudSegmentsStream(segments: readonly MediaSegmentInfo[], range?: { start: number; end: number }) {
@@ -249,7 +284,14 @@ export const videoRoutes: FastifyPluginAsync = async (app) => {
       if (Object.keys(filter).length > 0) predicates.push(filter);
       if (excludedVideoIds.length > 0) predicates.push({ _id: { $nin: excludedVideoIds } });
       const queryFilter = predicates.length === 1 ? predicates[0] ?? {} : { $and: predicates };
-      const rows = await VideoModel.find(queryFilter).sort({ createdAt: -1, _id: -1 }).limit(limit + 1);
+      const rows = type === "for_you"
+      ? await VideoModel.aggregate<VideoRecord & { _id: Types.ObjectId }>([
+          { $match: queryFilter },
+          { $sample: { size: limit + 1 } },
+        ])
+      : await VideoModel.find(queryFilter)
+          .sort({ createdAt: -1, _id: -1 })
+          .limit(limit + 1);
     const hasMore = rows.length > limit;
     const page = rows.slice(0, limit);
     let rankedPage = page;
@@ -398,9 +440,19 @@ export const videoRoutes: FastifyPluginAsync = async (app) => {
       }
     }
 
+    // For You candidates are sampled across the eligible collection.
+    // Shuffle the selected batch so recommendation scores do not force
+    // a fixed order within the sampled results.
+    if (type === "for_you" && rankedPage.length > 1) {
+      for (let i = rankedPage.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [rankedPage[i], rankedPage[j]] = [rankedPage[j]!, rankedPage[i]!];
+      }
+    }
+
     const items = (await Promise.all(rankedPage.map((video) => present(video, viewerId)))).filter(Boolean);
      const last = page.at(-1);
-     return reply.send(envelope({ feedType: type, generatedAt: new Date().toISOString(), items, pagination: { cursor: hasMore && last ? encodeCursor(last.createdAt, last._id) : null, hasMore, limit } }, request.id));
+     return reply.send(envelope({ feedType: type, generatedAt: new Date().toISOString(), items, pagination: { cursor: type === "following" && hasMore && last ? encodeCursor(last.createdAt, last._id) : null, hasMore, limit } }, request.id));
   });
 
    app.post("/videos", { bodyLimit: config.MAX_UPLOAD_BYTES + 1024 * 1024, config: { rateLimit: { max: 10, timeWindow: 60_000 } } }, async (request, reply) => {
@@ -541,11 +593,37 @@ export const videoRoutes: FastifyPluginAsync = async (app) => {
         }
       }
 
-      const video = await VideoModel.create({ creatorId: userId, caption, hashtags: toHashtags(caption), mediaKey: publishedMediaKey, mediaSegments, mimeType, mediaSizeBytes: byteSize, mediaWidth, mediaHeight, checksum: checksumHex, durationMs, thumbnailKey, thumbnailMimeType, privacy, commentsAllowed, allowDownloads, status: "published" });
+      const video = await VideoModel.create({ creatorId: userId, caption, hashtags: toHashtags(caption), mediaKey: publishedMediaKey, mediaSegments, mimeType, mediaSizeBytes: byteSize, mediaWidth, mediaHeight, checksum: checksumHex, durationMs, thumbnailKey, thumbnailMimeType, privacy, commentsAllowed, allowDownloads, status: "published", processingStatus: useCloudStorage ? "pending" : undefined });
       createdVideoId = video._id;
        const ownerUpdate = await UserModel.updateOne({ _id: userId, status: "active" }, { $inc: { videoCount: 1 } });
        if (ownerUpdate.matchedCount !== 1) throw Object.assign(new Error("Account is unavailable."), { statusCode: 401, code: "ACCOUNT_UNAVAILABLE" });
        ownerCountIncremented = true;
+
+       if (useCloudStorage) {
+         try {
+           await enqueueVideoProcessing(video._id.toString());
+           request.log.info(
+             { videoId: video._id.toString() },
+             "Video processing job queued",
+           );
+         } catch (queueError) {
+           request.log.error(
+             { err: queueError, videoId: video._id.toString() },
+             "Video processing queue unavailable; original video preserved",
+           );
+
+           await VideoModel.updateOne(
+             { _id: video._id },
+             { $set: { processingStatus: "failed" } },
+           ).catch((updateError: unknown) => {
+             request.log.error(
+               { err: updateError, videoId: video._id.toString() },
+               "Could not update video processing status",
+             );
+           });
+         }
+       }
+
        return reply.code(201).send(envelope({ video: await present(video, userId), checksum: checksumHex }, request.id));
      } catch (error) {
        for (const key of uploadedCloudKeys) {
@@ -685,7 +763,11 @@ export const videoRoutes: FastifyPluginAsync = async (app) => {
         : [video.mediaKey];
       const info = local
         ? { size: (await stat(path)).size, segments: [] as MediaSegmentInfo[] }
-        : await cloudSegmentsInfo(segmentedKeys);
+        : cloudSegmentsInfo(
+            segmentedKeys,
+            video.mediaSizeBytes,
+            Array.isArray(video.mediaSegments) && video.mediaSegments.length > 0,
+          );
       const range = request.headers.range;
       const cache = video.privacy === "public" ? "public, max-age=3600" : "private, no-store";
 

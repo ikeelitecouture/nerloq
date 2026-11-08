@@ -48,6 +48,24 @@ describe("environment provider safety", () => {
     expect(result.MEDIA_STORAGE_PROVIDER).toBe("local");
   });
 
+  it("allows the production video worker without email delivery configuration", () => {
+    const worker = {
+      ...base,
+      NODE_ENV: "production",
+      COOKIE_SECURE: "true",
+      REDIS_REQUIRED: "true",
+      MEDIA_STORAGE_PROVIDER: "s3",
+      MEDIA_STORAGE_ACCESS_KEY: "access",
+      MEDIA_STORAGE_SECRET_KEY: "secret",
+      NERLOQ_SERVICE_ROLE: "video-worker",
+    };
+
+    const result = validateEnvironment(worker as NodeJS.ProcessEnv);
+
+    expect(result.NERLOQ_SERVICE_ROLE).toBe("video-worker");
+    expect(result.EMAIL_PROVIDER).toBe("console");
+  });
+
   it("requires a real email, Redis, and cloud storage configuration in production", () => {
     const cloud = { ...base, NODE_ENV: "production", COOKIE_SECURE: "true", REDIS_REQUIRED: "true", MEDIA_STORAGE_PROVIDER: "s3", MEDIA_STORAGE_ACCESS_KEY: "access", MEDIA_STORAGE_SECRET_KEY: "secret", EMAIL_PROVIDER: "resend", EMAIL_FROM: "support@example.com", EMAIL_API_KEY: "test-provider-key" };
     const result = validateEnvironment(cloud as NodeJS.ProcessEnv);

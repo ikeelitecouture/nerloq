@@ -12,6 +12,10 @@ const environmentSchema = z.object({
     .enum(["development", "test", "staging", "production"])
     .default("development"),
 
+  NERLOQ_SERVICE_ROLE: z
+    .enum(["api", "video-worker"])
+    .default("api"),
+
   APP_NAME: z.string().trim().min(1).default("NERLOQ"),
   APP_VERSION: z.string().trim().min(1).default("1.0.0"),
   HOST: z.string().trim().min(1).default("0.0.0.0"),
@@ -161,7 +165,7 @@ function validateEnvironment(
     throw new Error("Staging and production require cloud media storage; local storage is for development only.");
   }
 
-  if (config.EMAIL_PROVIDER === "smtp") {
+  if (config.NERLOQ_SERVICE_ROLE === "api" && config.EMAIL_PROVIDER === "smtp") {
     throw new Error("SMTP delivery is not supported by this build. Configure Resend or SendGrid.");
   }
 
@@ -186,11 +190,11 @@ function validateEnvironment(
     }
   }
 
-  if ((config.NODE_ENV === "production" || config.NODE_ENV === "staging") && config.EMAIL_PROVIDER === "console") {
+  if (config.NERLOQ_SERVICE_ROLE === "api" && (config.NODE_ENV === "production" || config.NODE_ENV === "staging") && config.EMAIL_PROVIDER === "console") {
     throw new Error("Production requires an email delivery provider for account recovery.");
   }
 
-  if (config.EMAIL_PROVIDER !== "console") {
+  if (config.NERLOQ_SERVICE_ROLE === "api" && config.EMAIL_PROVIDER !== "console") {
     const requiredEmailValues = [
       ["EMAIL_FROM", config.EMAIL_FROM],
       ["EMAIL_API_KEY", config.EMAIL_API_KEY],

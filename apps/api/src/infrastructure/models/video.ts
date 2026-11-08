@@ -8,6 +8,7 @@ export interface VideoRecord {
   mediaKey: string;
   mediaSegments: string[];
   mimeType: string;
+  externalVideoUrl?: string | null;
   mediaSizeBytes: number;
   mediaWidth: number | null;
   mediaHeight: number | null;
@@ -38,7 +39,8 @@ const schema = new mongoose.Schema<VideoRecord>({
   hashtags: { type: [String], default: [] },
   mediaKey: { type: String, required: true, unique: true },
   mediaSegments: { type: [String], default: [] },
-  mimeType: { type: String, enum: ["video/mp4", "video/webm", "video/quicktime"], required: true },
+  mimeType: { type: String, enum: ["video/mp4", "video/webm", "video/quicktime", "video/youtube", "image/jpeg", "image/png", "image/webp"], required: true },
+  externalVideoUrl: { type: String, default: null, maxlength: 500 },
   mediaSizeBytes: { type: Number, required: true, min: 1 },
   mediaWidth: { type: Number, default: null, min: 1, max: 3840 },
   mediaHeight: { type: Number, default: null, min: 1, max: 3840 },

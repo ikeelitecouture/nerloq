@@ -1,9 +1,11 @@
 import React from "react";
+import Hls from "hls.js";
 import { Link } from "react-router-dom";
 import { Bookmark, Check, Heart, MessageCircle, MoreHorizontal, Pause, Play, Repeat2, Share2, Volume2, VolumeX, X } from "lucide-react";
 import type { Comment, ContentReportReason, FeedResponse, Video } from "@nerloq/shared";
 import { api, ApiClientError, resolveMediaUrl } from "../../lib/api";
 import { useAuth } from "../auth/AuthContext";
+import { resolveExternalVideoEmbed } from "../../lib/external-video";
 
 type FollowState = "loading" | "none" | "following" | "requested" | "blocked" | "own";
 
@@ -173,10 +175,14 @@ function VideoCard({ video, viewerId, active, loadMedia, preload, autoplay, mute
   const [reportOpen, setReportOpen] = React.useState(false);
   const [blockPrompt, setBlockPrompt] = React.useState(false);
   const [mediaError, setMediaError] = React.useState(false);
+  const [hlsFallback, setHlsFallback] = React.useState(false);
   const [buffering, setBuffering] = React.useState(false);
   const counted = React.useRef(false);
   const paused = manualPlaying === null ? !autoplay : !manualPlaying;
   const isOwn = followState === "own" || viewerId === video.creator.id;
+  const isExternal = Boolean(video.externalVideoUrl);
+  const isImage = video.media.mimeType.startsWith("image/");
+  const externalEmbed = video.externalVideoUrl ? resolveExternalVideoEmbed(video.externalVideoUrl) : null;
 
   React.useEffect(() => {
     queueMicrotask(() => setMuted(muteByDefault));
@@ -205,6 +211,61 @@ function VideoCard({ video, viewerId, active, loadMedia, preload, autoplay, mute
     if (active && !paused) void node.play().catch(() => setManualPlaying(false));
     else node.pause();
   }, [active, muted, paused]);
+
+  React.useEffect(() => {
+    const node = media.current;
+    const manifestUrl = video.manifest?.masterUrl;
+    if (!node || !loadMedia || !manifestUrl) {
+      setHlsFallback(false);
+      return;
+    }
+
+    setMediaError(false);
+    setHlsFallback(false);
+    const source = resolveMediaUrl(manifestUrl);
+    if (!source) {
+      setHlsFallback(true);
+      return;
+    }
+
+    if (Hls.isSupported()) {
+      const hls = new Hls({
+        enableWorker: true,
+        autoStartLoad: active,
+        capLevelToPlayerSize: true,
+        backBufferLength: 20,
+        maxBufferLength: 12,
+        maxMaxBufferLength: 20,
+        xhrSetup: (xhr) => { xhr.withCredentials = true; },
+      });
+      let destroyed = false;
+      hls.on(Hls.Events.ERROR, (_event, data) => {
+        if (data.fatal) {
+          if (!destroyed) {
+            destroyed = true;
+            hls.destroy();
+          }
+          setHlsFallback(true);
+        }
+      });
+      hls.loadSource(source);
+      hls.attachMedia(node);
+      return () => {
+        if (!destroyed) hls.destroy();
+      };
+    }
+
+    if (node.canPlayType("application/vnd.apple.mpegurl")) {
+      node.src = source;
+      return () => {
+        node.pause();
+        node.removeAttribute("src");
+        node.load();
+      };
+    }
+
+    setHlsFallback(true);
+  }, [active, loadMedia, video.id, video.manifest?.masterUrl]);
 
   React.useEffect(() => {
     const closeMenu = (event: PointerEvent) => { if (menu.current && !menu.current.contains(event.target as Node)) setMenuOpen(false); };
@@ -268,20 +329,12 @@ function VideoCard({ video, viewerId, active, loadMedia, preload, autoplay, mute
 
   return <article className={`video-card${paused ? " is-paused" : ""}`} data-video-id={video.id} aria-label={`Video by ${video.creator.displayName}`}>
     <div className="video-media-wrap">
-      <video ref={media} className="video-media" crossOrigin="use-credentials" src={loadMedia ? resolveMediaUrl(video.media.url) : undefined} poster={loadMedia ? resolveMediaUrl(video.thumbnailUrl) : undefined} playsInline loop preload={preload} muted={muted} onClick={togglePlayback} onLoadedMetadata={event => setDuration(event.currentTarget.duration || duration)} onTimeUpdate={event => updateTime(event.currentTarget)}
-      onLoadStart={() => setBuffering(true)}
-      onWaiting={() => setBuffering(true)}
-      onStalled={() => setBuffering(true)}
-      onPlaying={() => setBuffering(false)}
-      onCanPlay={() => setBuffering(false)}
-      onSeeking={() => setBuffering(true)}
-      onSeeked={() => setBuffering(false)}
-      onError={() => { setBuffering(false); setMediaError(true); }} aria-label={`Video: ${video.caption || `by ${video.creator.displayName}`}`}/>
+      {isExternal && externalEmbed ? (loadMedia ? <iframe className="video-media video-external-embed" src={externalEmbed.embedUrl} title={`YouTube video by ${video.creator.displayName}`} loading={active ? "eager" : "lazy"} onLoad={() => { if (!counted.current) { counted.current = true; void api.recordView(video.id).catch(() => undefined); } }} allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerPolicy="strict-origin-when-cross-origin" allowFullScreen/> : <div className="video-media video-external-placeholder">YouTube video · loads when selected</div>) : isImage ? <img className="video-media video-image-post" src={loadMedia ? resolveMediaUrl(video.media.url) : undefined} alt={video.caption || `Photo by ${video.creator.displayName}`} loading={active ? "eager" : "lazy"} onLoad={() => { if (!counted.current) { counted.current = true; void api.recordView(video.id).catch(() => undefined); } }}/> : <video ref={media} className="video-media" crossOrigin="use-credentials" src={loadMedia && (!video.manifest?.masterUrl || hlsFallback) ? resolveMediaUrl(video.media.url) : undefined} poster={loadMedia ? resolveMediaUrl(video.thumbnailUrl) : undefined} playsInline loop preload={preload} muted={muted} onClick={togglePlayback} onLoadedMetadata={event => setDuration(event.currentTarget.duration || duration)} onTimeUpdate={event => updateTime(event.currentTarget)} onLoadStart={() => setBuffering(true)} onWaiting={() => setBuffering(true)} onStalled={() => setBuffering(true)} onPlaying={() => setBuffering(false)} onCanPlay={() => setBuffering(false)} onSeeking={() => setBuffering(true)} onSeeked={() => setBuffering(false)} onError={() => { setBuffering(false); if (video.manifest?.masterUrl && !hlsFallback) setHlsFallback(true); else setMediaError(true); }} aria-label={`Video: ${video.caption || `by ${video.creator.displayName}`}`}/>}
       {buffering && active && !mediaError && <div className="video-buffering" role="status" aria-label="Loading video"><span/></div>}
-      {mediaError && <div className="video-media-error" role="alert"><span>Video unavailable</span><button className="quiet-action" onClick={() => { setMediaError(false); media.current?.load(); }}>Try again</button></div>}
-      <button className="video-play-toggle" onClick={togglePlayback} aria-label={paused ? "Play video" : "Pause video"}>{paused ? <Play size={24}/> : <Pause size={21}/>}</button>
-      <div className="video-progress"><span style={{ width: `${progress}%` }}/><input type="range" min="0" max="100" step="0.1" value={progress} onChange={event => { const node = media.current; if (!node || !node.duration) return; node.currentTime = Number(event.target.value) / 100 * node.duration; setProgress(Number(event.target.value)); }} aria-label="Video progress"/></div>
-      <div className="video-top-tools"><span className="feed-badge">NERLOQ / VIDEO</span><button className="video-sound" onClick={() => setMuted(value => !value)} aria-label={muted ? "Unmute video" : "Mute video"}>{muted ? <VolumeX size={17}/> : <Volume2 size={17}/>}</button></div>
+      {mediaError && <div className="video-media-error" role="alert"><span>Media unavailable</span><button className="quiet-action" onClick={() => { setMediaError(false); media.current?.load(); }}>Try again</button></div>}
+      {!isExternal && !isImage && <button className="video-play-toggle" onClick={togglePlayback} aria-label={paused ? "Play video" : "Pause video"}>{paused ? <Play size={24}/> : <Pause size={21}/>}</button>}
+      {!isExternal && !isImage && <div className="video-progress"><span style={{ width: `${progress}%` }}/><input type="range" min="0" max="100" step="0.1" value={progress} onChange={event => { const node = media.current; if (!node || !node.duration) return; node.currentTime = Number(event.target.value) / 100 * node.duration; setProgress(Number(event.target.value)); }} aria-label="Video progress"/></div>}
+      <div className="video-top-tools"><span className="feed-badge">{isExternal ? "NERLOQ / YOUTUBE" : isImage ? "NERLOQ / PHOTO" : "NERLOQ / VIDEO"}</span>{!isExternal && !isImage && <button className="video-sound" onClick={() => setMuted(value => !value)} aria-label={muted ? "Unmute video" : "Mute video"}>{muted ? <VolumeX size={17}/> : <Volume2 size={17}/>}</button>}</div>
       <div className="video-gradient"/>
       <div className="video-copy"><div className="video-creator-row"><Link to={`/u/${encodeURIComponent(video.creator.username)}`} className="video-avatar">{video.creator.avatarUrl ? <img src={resolveMediaUrl(video.creator.avatarUrl)} alt=""/> : video.creator.displayName.slice(0, 1).toUpperCase()}</Link><Link to={`/u/${encodeURIComponent(video.creator.username)}`} className="video-creator-name">{video.creator.displayName}{video.creator.verified && <Check size={13}/>}<small>@{video.creator.username}</small></Link>{!isOwn && <button className={`follow-chip ${followState === "following" || followState === "requested" ? "following" : ""}`} disabled={followBusy || followState === "loading" || followState === "blocked"} aria-busy={followBusy || followState === "loading"} aria-label={followState === "following" ? "Unfollow creator" : followState === "requested" ? "Cancel follow request" : "Follow creator"} onClick={() => void follow()}>{followBusy ? "…" : followState === "loading" ? "" : followState === "following" ? "Following" : followState === "requested" ? "Requested" : followState === "blocked" ? "Unavailable" : "Follow"}</button>}</div><p className="video-caption">{video.caption}</p>{video.hashtags.length > 0 && <div className="video-tags">{video.hashtags.map(tag => <Link key={tag.tag} to={`/tag/${encodeURIComponent(tag.tag)}`}>#{tag.tag}</Link>)}</div>}<div className="video-soundline"><span className="sound-disc">♪</span>{video.sound ? <a href={resolveMediaUrl(video.sound.audioUrl)} target="_blank" rel="noreferrer">{video.sound.title} · {video.sound.artistName}</a> : <span>Original sound · @{video.creator.username}</span>}</div>{video.productLinks.length > 0 && <div className="video-product-hint">{video.productLinks.map(product => <a key={product.id} href={product.url} target="_blank" rel="noreferrer">{product.title}<span>↗</span></a>)}</div>}</div>
       <div className="video-rail"><button className={video.likedByViewer ? "chosen" : ""} onClick={onLike} aria-label={video.likedByViewer ? "Unlike video" : "Like video"}><Heart size={22} fill={video.likedByViewer ? "currentColor" : "none"}/><span>{count(video.likeCount)}</span></button><button onClick={onComments} aria-label="Open comments"><MessageCircle size={22}/><span>{count(video.commentCount)}</span></button><button className={video.repostedByViewer ? "chosen" : ""} onClick={onRepost} aria-label={video.repostedByViewer ? "Undo repost" : "Repost video"}><Repeat2 size={22}/><span>{count(video.repostCount)}</span></button><button className={video.savedByViewer ? "chosen" : ""} onClick={onSave} aria-label={video.savedByViewer ? "Remove saved video" : "Save video"}><Bookmark size={21} fill={video.savedByViewer ? "currentColor" : "none"}/><span>{count(video.saveCount)}</span></button><button onClick={() => void share()} aria-label="Share video"><Share2 size={20}/><span>{count(video.shareCount)}</span></button><div className="video-menu-wrap" ref={menu}><button onClick={() => setMenuOpen(value => !value)} aria-expanded={menuOpen} aria-label="More video options"><MoreHorizontal size={21}/></button>{menuOpen && <div className="video-menu"><button onClick={() => { setReportOpen(true); setMenuOpen(false); }}>Report video</button>{!isOwn && <><button onClick={() => void muteCreator()}>Mute creator</button><button onClick={() => { setBlockPrompt(true); setMenuOpen(false); }}>Block creator</button></>}</div>}</div></div>

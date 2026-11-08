@@ -307,3 +307,6 @@
   bottom: calc(env(safe-area-inset-bottom, 0px) + 72px);
 }
 
+
+.video-external-embed{border:0;object-fit:contain;background:#000;cursor:auto}.video-image-post{object-fit:contain;background:#080907;cursor:default}
+.video-external-placeholder{display:grid;place-items:center;color:#e6e1d3;font-size:12px;background:#080907;cursor:default}

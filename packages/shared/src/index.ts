@@ -236,6 +236,7 @@ export interface Video {
   readonly hashtags: readonly HashtagEntity[];
   readonly mentions: readonly Mention[];
   readonly media: MediaAsset;
+  readonly externalVideoUrl?: URLString | null;
   readonly manifest: VideoManifest | null;
   readonly thumbnailUrl: URLString | null;
   readonly durationMs: number;

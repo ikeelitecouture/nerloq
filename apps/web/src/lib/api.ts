@@ -217,6 +217,7 @@ export const api = {
   search: (query: string, type: "all"|"creators"|"videos"|"hashtags" = "all") => request<import("@nerloq/shared").SearchResult>(`/search?q=${encodeURIComponent(query)}&type=${type}`),
   hashtagFeed: (tag: string) => request<{ tag: string; items: readonly import("@nerloq/shared").Video[] }>(`/hashtags/${encodeURIComponent(tag)}/feed`),
   publishVideo: (form: FormData, onProgress?: (value: number) => void) => upload<{ video: import("@nerloq/shared").Video; checksum: string }>("/videos", form, onProgress),
+  publishExternalVideo: (input: { url: string; caption: string; privacy: "public" | "followers" | "private"; commentsAllowed: boolean }) => request<{ video: import("@nerloq/shared").Video; checksum: string }>("/videos/external", { method: "POST", body: JSON.stringify(input) }),
   videoAction: (videoId: string, action: "like" | "save" | "repost", active: boolean) => request<{ active: boolean; count: number }>(`/videos/${encodeURIComponent(videoId)}/${action}`, { method: active ? "POST" : "DELETE" }),
   recordView: (videoId: string) => request<{ counted: boolean }>(`/videos/${encodeURIComponent(videoId)}/view`, { method: "POST" }),
   shareVideo: (videoId: string) => request<{ shareCount: number }>(`/videos/${encodeURIComponent(videoId)}/share`, { method: "POST" }),

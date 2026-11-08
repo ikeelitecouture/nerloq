@@ -172,8 +172,18 @@ async function present(video: VideoRecord & { _id: Types.ObjectId }, viewerId: s
   return {
     id, creator: actor({ _id: creator._id, username: creator.username, displayName: creator.displayName, avatarUrl: creator.avatarUrl, verified: creator.verified }),
     caption: video.caption, hashtags: tags, mentions: [],
-     media: { id: video.mediaKey, url: `/api/v1/media/${id}`, mimeType: video.mimeType, byteSize: video.mediaSizeBytes, width: video.mediaWidth, height: video.mediaHeight, durationMs: video.durationMs, status: "ready", checksum: video.checksum, createdAt: video.createdAt.toISOString() },
-    manifest: null, thumbnailUrl: video.thumbnailKey ? `/api/v1/media/${id}/thumbnail` : video.thumbnailUrl, durationMs: video.durationMs, privacy: video.privacy, status: "published", sound: null,
+     media: { id: video.mediaKey, url: video.externalVideoUrl ? "" : `/api/v1/media/${id}`, mimeType: video.mimeType, byteSize: video.mediaSizeBytes, width: video.mediaWidth, height: video.mediaHeight, durationMs: video.durationMs, status: "ready", checksum: video.checksum, createdAt: video.createdAt.toISOString() },
+    externalVideoUrl: video.externalVideoUrl ?? null,
+    manifest: video.playbackManifestKey && video.processingStatus === "ready"
+      ? {
+          id: `${id}:hls`,
+          masterUrl: `/api/v1/media/${id}/hls/master.m3u8`,
+          variants: [],
+          durationMs: video.durationMs,
+          segmentDurationMs: 4000,
+        }
+      : null,
+    thumbnailUrl: video.thumbnailKey ? `/api/v1/media/${id}/thumbnail` : video.thumbnailUrl, durationMs: video.durationMs, privacy: video.privacy, status: "published", sound: null,
     originalVideoId: null, duetSourceVideoId: null, stitchSourceVideoId: null, replyToCommentId: null, productLinks: [], interactiveLayers: [],
     likeCount: video.likeCount, commentCount: video.commentCount, repostCount: video.repostCount, shareCount: video.shareCount, saveCount: video.saveCount, viewCount: video.viewCount,
     likedByViewer: flags.has("like"), savedByViewer: flags.has("save"), repostedByViewer: flags.has("repost"), createdAt: video.createdAt.toISOString(), updatedAt: video.updatedAt.toISOString(),
@@ -455,6 +465,25 @@ export const videoRoutes: FastifyPluginAsync = async (app) => {
      return reply.send(envelope({ feedType: type, generatedAt: new Date().toISOString(), items, pagination: { cursor: type === "following" && hasMore && last ? encodeCursor(last.createdAt, last._id) : null, hasMore, limit } }, request.id));
   });
 
+   app.post("/videos/external", { config: { rateLimit: { max: 10, timeWindow: 60_000 } } }, async (request, reply) => {
+      const userId = await authenticate(request);
+      if (!userId) return fail(reply, 401, "AUTHENTICATION_REQUIRED", "Sign in to publish.", request.id);
+      const body = request.body as { url?: string; caption?: string; privacy?: string; commentsAllowed?: boolean };
+      let parsed: URL;
+      try { parsed = new URL(String(body.url ?? "")); } catch { return fail(reply, 400, "INVALID_YOUTUBE_URL", "Enter a valid YouTube link.", request.id); }
+      const host = parsed.hostname.toLowerCase().replace(/^www\./, "");
+      if (parsed.protocol !== "https:" || parsed.username || parsed.password || !["youtube.com", "m.youtube.com", "youtu.be", "music.youtube.com"].includes(host)) return fail(reply, 400, "INVALID_YOUTUBE_URL", "Only YouTube video links are supported.", request.id);
+      const youtubeId = host === "youtu.be" ? parsed.pathname.split("/").filter(Boolean)[0] ?? null : parsed.pathname === "/watch" ? parsed.searchParams.get("v") : parsed.pathname.match(/^\/(?:shorts|embed|live)\/([A-Za-z0-9_-]{11})\/?$/)?.[1] ?? null;
+      if (!youtubeId || !/^[A-Za-z0-9_-]{11}$/.test(youtubeId)) return fail(reply, 400, "INVALID_YOUTUBE_URL", "That YouTube link is not valid.", request.id);
+      const privacy = body.privacy === "followers" || body.privacy === "private" ? body.privacy : "public";
+      const canonicalUrl = `https://www.youtube.com/watch?v=${youtubeId}`;
+      const checksum = createHash("sha256").update(canonicalUrl).digest("hex");
+      const video = await VideoModel.create({ creatorId: userId, caption: String(body.caption ?? "").trim().slice(0, 2200), hashtags: toHashtags(String(body.caption ?? "")), mediaKey: `youtube-${youtubeId}-${randomUUID()}`, mediaSegments: [], mimeType: "video/youtube", externalVideoUrl: canonicalUrl, mediaSizeBytes: 1, mediaWidth: null, mediaHeight: null, checksum, durationMs: 1, thumbnailKey: null, thumbnailMimeType: null, privacy, commentsAllowed: body.commentsAllowed !== false, allowDownloads: false, status: "published" });
+      const updated = await UserModel.updateOne({ _id: userId, status: "active" }, { $inc: { videoCount: 1 } });
+      if (updated.matchedCount !== 1) { await VideoModel.deleteOne({ _id: video._id }); return fail(reply, 401, "ACCOUNT_UNAVAILABLE", "Account is unavailable.", request.id); }
+      return reply.code(201).send(envelope({ video: await present(video, userId), checksum }, request.id));
+    });
+
    app.post("/videos", { bodyLimit: config.MAX_UPLOAD_BYTES + 1024 * 1024, config: { rateLimit: { max: 10, timeWindow: 60_000 } } }, async (request, reply) => {
     const userId = await authenticate(request);
     if (!userId) return fail(reply, 401, "AUTHENTICATION_REQUIRED", "Sign in to publish a video.", request.id);
@@ -509,20 +538,21 @@ export const videoRoutes: FastifyPluginAsync = async (app) => {
           if (part.fieldname !== "file") { part.file.resume(); throw Object.assign(new Error("The video upload contains an unsupported file field."), { statusCode: 400, code: "UNEXPECTED_FILE_FIELD" }); }
           if (mediaKey) throw Object.assign(new Error("Upload one video per post."), { statusCode: 400, code: "TOO_MANY_FILES" });
           mimeType = part.mimetype;
-          const extension = mimeType === "video/webm" ? ".webm" : mimeType === "video/quicktime" ? ".mov" : mimeType === "video/mp4" ? ".mp4" : "";
-          if (!extension) { part.file.resume(); throw Object.assign(new Error("Choose an MP4, MOV, or WebM video."), { statusCode: 415, code: "UNSUPPORTED_MEDIA_TYPE" }); }
+          const extension = mimeType === "video/webm" ? ".webm" : mimeType === "video/quicktime" ? ".mov" : mimeType === "video/mp4" ? ".mp4" : mimeType === "image/jpeg" ? ".jpg" : mimeType === "image/png" ? ".png" : mimeType === "image/webp" ? ".webp" : "";
+          if (!extension) { part.file.resume(); throw Object.assign(new Error("Choose MP4, MOV, WebM, JPEG, PNG, or WebP media."), { statusCode: 415, code: "UNSUPPORTED_MEDIA_TYPE" }); }
           mediaKey = randomUUID();
           tempPath = join(MEDIA_ROOT, `${mediaKey}.upload`);
           storedPath = join(MEDIA_ROOT, `${mediaKey}${extension}`);
           const inspector = new Transform({ transform(chunk: Buffer, _encoding, callback) {
-            if (prefix.length < 32) prefix = Buffer.concat([prefix, chunk.subarray(0, 32 - prefix.length)]);
+            if (prefix.length < 4096) prefix = Buffer.concat([prefix, chunk.subarray(0, 4096 - prefix.length)]);
             byteSize += chunk.length;
+            if (mimeType.startsWith("image/") && byteSize > 10 * 1024 * 1024) { callback(Object.assign(new Error("Photos must be 10 MB or smaller."), { statusCode: 413, code: "IMAGE_TOO_LARGE" })); return; }
             checksum.update(chunk);
             callback(null, chunk);
           } });
           await pipeline(part.file, inspector, createWriteStream(tempPath, { flags: "wx", mode: 0o600 }));
           if (part.file.truncated) throw Object.assign(new Error("The video exceeds the upload size limit."), { statusCode: 413, code: "UPLOAD_TOO_LARGE" });
-          if (!isSupportedVideoContent(mimeType, prefix)) throw Object.assign(new Error("The file contents do not match the selected video format."), { statusCode: 415, code: "INVALID_MEDIA_CONTENT" });
+          if (mimeType.startsWith("image/") ? !isSafeCoverImage(mimeType, prefix) : !isSupportedVideoContent(mimeType, prefix)) throw Object.assign(new Error("The file contents do not match the selected media format or supported image dimensions."), { statusCode: 415, code: "INVALID_MEDIA_CONTENT" });
           await rename(tempPath, storedPath);
           tempPath = null;
         } else {
@@ -540,7 +570,9 @@ export const videoRoutes: FastifyPluginAsync = async (app) => {
       }
       if (!mediaKey || !storedPath) throw Object.assign(new Error("Choose a video file to publish."), { statusCode: 400, code: "VIDEO_REQUIRED" });
        let metadata: { durationMs: number; width: number | null; height: number | null };
-       try {
+       if (mimeType.startsWith("image/")) {
+         metadata = { durationMs: 1, width: null, height: null };
+       } else try {
          const inspected = await inspectVideoMetadata(config.FFPROBE_BINARY, storedPath);
          metadata = inspected;
        } catch (error) {
@@ -555,7 +587,7 @@ export const videoRoutes: FastifyPluginAsync = async (app) => {
        if (durationMs > config.MAX_VIDEO_DURATION_MS) throw Object.assign(new Error("Video duration exceeds the allowed limit."), { statusCode: 400, code: "INVALID_DURATION" });
        if ((metadata.width !== null && metadata.width > config.MAX_VIDEO_WIDTH) || (metadata.height !== null && metadata.height > config.MAX_VIDEO_HEIGHT)) throw Object.assign(new Error("Video dimensions exceed the allowed limit."), { statusCode: 400, code: "INVALID_DIMENSIONS" });
       const checksumHex = checksum.digest("hex");
-      const finalMediaKey = `${mediaKey}${storedPath.endsWith(".webm") ? ".webm" : storedPath.endsWith(".mov") ? ".mov" : ".mp4"}`;
+      const finalMediaKey = `${mediaKey}${storedPath.endsWith(".webm") ? ".webm" : storedPath.endsWith(".mov") ? ".mov" : storedPath.endsWith(".jpg") ? ".jpg" : storedPath.endsWith(".png") ? ".png" : storedPath.endsWith(".webp") ? ".webp" : ".mp4"}`;
 
       let mediaSegments: string[] = [];
       let publishedMediaKey = finalMediaKey;
@@ -593,13 +625,13 @@ export const videoRoutes: FastifyPluginAsync = async (app) => {
         }
       }
 
-      const video = await VideoModel.create({ creatorId: userId, caption, hashtags: toHashtags(caption), mediaKey: publishedMediaKey, mediaSegments, mimeType, mediaSizeBytes: byteSize, mediaWidth, mediaHeight, checksum: checksumHex, durationMs, thumbnailKey, thumbnailMimeType, privacy, commentsAllowed, allowDownloads, status: "published", processingStatus: useCloudStorage ? "pending" : undefined });
+      const video = await VideoModel.create({ creatorId: userId, caption, hashtags: toHashtags(caption), mediaKey: publishedMediaKey, mediaSegments, mimeType, mediaSizeBytes: byteSize, mediaWidth, mediaHeight, checksum: checksumHex, durationMs, thumbnailKey, thumbnailMimeType, privacy, commentsAllowed, allowDownloads, status: "published", processingStatus: useCloudStorage && !mimeType.startsWith("image/") ? "pending" : undefined });
       createdVideoId = video._id;
        const ownerUpdate = await UserModel.updateOne({ _id: userId, status: "active" }, { $inc: { videoCount: 1 } });
        if (ownerUpdate.matchedCount !== 1) throw Object.assign(new Error("Account is unavailable."), { statusCode: 401, code: "ACCOUNT_UNAVAILABLE" });
        ownerCountIncremented = true;
 
-       if (useCloudStorage) {
+       if (useCloudStorage && !mimeType.startsWith("image/")) {
          try {
            await enqueueVideoProcessing(video._id.toString());
            request.log.info(
@@ -719,6 +751,51 @@ export const videoRoutes: FastifyPluginAsync = async (app) => {
     const video = await VideoModel.findById(videoId);
     if (!video || !(await canView(video, viewerId))) return fail(reply, 404, "VIDEO_UNAVAILABLE", "This video is unavailable.", request.id);
     return reply.send(envelope({ video: await present(video, viewerId) }, request.id));
+  });
+
+  app.get("/media/:videoId/hls/*", async (request, reply) => {
+    const { videoId } = request.params as { videoId: string; "*": string };
+    const relativePath = (request.params as { "*": string })["*"] ?? "";
+
+    if (!publicId(videoId) || !relativePath || relativePath.includes("\\") ||
+        !/^[A-Za-z0-9._/-]+$/.test(relativePath) ||
+        relativePath.split("/").some((part) => !part || part === "." || part === "..")) {
+      return fail(reply, 404, "MEDIA_UNAVAILABLE", "Media is unavailable.", request.id);
+    }
+
+    const extension = relativePath.split(".").pop()?.toLowerCase();
+    if (extension !== "m3u8" && extension !== "ts") {
+      return fail(reply, 404, "MEDIA_UNAVAILABLE", "Media is unavailable.", request.id);
+    }
+
+    const viewerId = await authenticate(request, { rejectInvalidCredential: false });
+    const video = await VideoModel.findById(videoId);
+    const expectedManifestKey = `${videoId}/hls/master.m3u8`;
+    if (!video || video.playbackManifestKey !== expectedManifestKey ||
+        video.processingStatus !== "ready" || !(await canView(video, viewerId))) {
+      return fail(reply, 404, "MEDIA_UNAVAILABLE", "Media is unavailable.", request.id);
+    }
+
+    try {
+      const key = `${videoId}/hls/${relativePath}`;
+      // HLS segments are immutable per video ID. Avoid an extra HEAD request
+      // before every segment GET; this removes one storage round trip per segment.
+      const stream = await getMediaStream(key);
+      const contentType = extension === "m3u8"
+        ? "application/vnd.apple.mpegurl"
+        : "video/mp2t";
+      const cache = video.privacy === "public"
+        ? "public, max-age=86400, immutable"
+        : "private, no-store";
+
+      return reply.type(contentType)
+        .header("Cache-Control", cache)
+        .header("Vary", "Cookie")
+        .header("X-Content-Type-Options", "nosniff")
+        .send(stream);
+    } catch {
+      return fail(reply, 404, "MEDIA_UNAVAILABLE", "Media is unavailable.", request.id);
+    }
   });
 
   app.get("/media/:videoId/thumbnail", async (request, reply) => {

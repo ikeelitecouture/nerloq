@@ -220,6 +220,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   app.register(helmet, {
     global: true,
     contentSecurityPolicy: false,
+    crossOriginResourcePolicy: { policy: "cross-origin" },
   });
 
   app.register(cors, {

@@ -268,7 +268,7 @@ function VideoCard({ video, viewerId, active, loadMedia, preload, autoplay, mute
 
   return <article className={`video-card${paused ? " is-paused" : ""}`} data-video-id={video.id} aria-label={`Video by ${video.creator.displayName}`}>
     <div className="video-media-wrap">
-      <video ref={media} className="video-media" src={loadMedia ? resolveMediaUrl(video.media.url) : undefined} poster={loadMedia ? resolveMediaUrl(video.thumbnailUrl) : undefined} playsInline loop preload={preload} muted={muted} onClick={togglePlayback} onLoadedMetadata={event => setDuration(event.currentTarget.duration || duration)} onTimeUpdate={event => updateTime(event.currentTarget)}
+      <video ref={media} className="video-media" crossOrigin="use-credentials" src={loadMedia ? resolveMediaUrl(video.media.url) : undefined} poster={loadMedia ? resolveMediaUrl(video.thumbnailUrl) : undefined} playsInline loop preload={preload} muted={muted} onClick={togglePlayback} onLoadedMetadata={event => setDuration(event.currentTarget.duration || duration)} onTimeUpdate={event => updateTime(event.currentTarget)}
       onLoadStart={() => setBuffering(true)}
       onWaiting={() => setBuffering(true)}
       onStalled={() => setBuffering(true)}
